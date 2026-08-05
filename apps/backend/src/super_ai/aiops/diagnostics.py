@@ -51,6 +51,8 @@ class AiopsDiagnosticState(TypedDict, total=False):
     plan_index: int
     continue_execution: bool
     execution_failed: bool
+    consecutive_failures: int
+    contract: str
     report_id: str
     events: Annotated[list[dict[str, object]], add]
     evidence: Annotated[list[JsonDict], add]
@@ -129,6 +131,7 @@ class AiopsDiagnosticService:
             "accessible_knowledge_base_ids": tuple(accessible_knowledge_base_ids),
             "plan_index": 0,
             "execution_failed": False,
+            "consecutive_failures": 0,
             "events": [],
             "evidence": [],
             "evidence_ids": initial_evidence_ids,
@@ -376,14 +379,49 @@ class AiopsDiagnosticService:
         owner_user_id = str(state["owner_user_id"])
         plan = cast(list[JsonDict], state.get("plan") or [])
         plan_index = int(state.get("plan_index") or 0)
-        if plan_index >= len(plan):
+        contract = str(state.get("contract") or "bounded_delivery")
+        query = str(state.get("query") or "")
+        consecutive_failures = int(state.get("consecutive_failures") or 0)
+        if plan_index >= len(plan) and contract == "bounded_delivery":
             return {"events": []}
 
-        step = plan[plan_index]
+        step = plan[plan_index] if plan_index < len(plan) else {}
         tool_name = str(step.get("tool") or "")
         arguments = _json_dict(step.get("arguments"))
+
+        # -- interaction contract: override step for recovery modes --
+        if contract in ("autonomous_replan", "outcome_floor_recovery"):
+            search_query = (
+                f"替代排查路径: {query}"
+                if contract == "autonomous_replan"
+                else f"最低限度证据收集: {query}"
+            )
+            tool_name = "knowledge_retrieval"
+            arguments = {"query": search_query, "topK": 3}
+            purpose = (
+                "Autonomous replan triggered — searching KB for alternative troubleshooting steps."
+                if contract == "autonomous_replan"
+                else "Outcome floor recovery — collecting minimum viable evidence from KB."
+            )
+            step = {
+                "id": f"contract_{contract}_{plan_index}",
+                "tool": tool_name,
+                "arguments": arguments,
+                "purpose": purpose,
+            }
+            events_extra = [
+                _task_status_event(
+                    task_id,
+                    "running",
+                    f"Executor: {contract} — falling back to KB retrieval.",
+                    min(45 + plan_index * 15, 70),
+                )
+            ]
+        else:
+            events_extra = []
         audit_id = f"tool_{uuid4().hex}"
         events = [
+            *events_extra,
             _task_status_event(
                 task_id,
                 "running",
@@ -464,6 +502,7 @@ class AiopsDiagnosticService:
             return {
                 "plan_index": plan_index + 1,
                 "execution_failed": True,
+                "consecutive_failures": consecutive_failures + 1,
                 "evidence": [evidence],
                 "evidence_ids": [evidence_record.id],
                 "events": events,
@@ -523,6 +562,7 @@ class AiopsDiagnosticService:
         await self._save_checkpoint(state, "executor", {"evidence": evidence})
         return {
             "plan_index": plan_index + 1,
+            "consecutive_failures": 0,
             "evidence": [evidence],
             "evidence_ids": [evidence_record.id],
             "events": events,
@@ -533,16 +573,29 @@ class AiopsDiagnosticService:
         plan = cast(list[JsonDict], state.get("plan") or [])
         plan_index = int(state.get("plan_index") or 0)
         execution_failed = bool(state.get("execution_failed"))
-        continue_execution = plan_index < len(plan) and not execution_failed
-        decision = (
-            "continuing with the next bounded step" if continue_execution else "moving to Report"
+        consecutive_failures = int(state.get("consecutive_failures") or 0)
+        contract = self._determine_contract(
+            plan_index=plan_index,
+            plan_length=len(plan),
+            execution_failed=execution_failed,
+            consecutive_failures=consecutive_failures,
+            has_evidence=bool(state.get("evidence")),
         )
+        continue_execution = contract != "report"
+        progress = 70 if continue_execution else 80
+        decision_messages: dict[str, str] = {
+            "bounded_delivery": "continuing with the next bounded step",
+            "autonomous_replan": "2+ consecutive failures — triggering autonomous replan with KB fallback",
+            "outcome_floor_recovery": "execution failed with no evidence — falling back to KB-only recovery",
+            "report": "plan exhausted or partial evidence collected — moving to Report",
+        }
+        message = decision_messages.get(contract, f"contract={contract}")
         events = [
             _task_status_event(
                 task_id,
                 "running",
-                f"Replanner: {decision} based on recorded execution evidence.",
-                70 if continue_execution else 80,
+                f"Replanner: {message} based on recorded execution evidence.",
+                progress,
             )
         ]
         await self._create_step(
@@ -554,6 +607,8 @@ class AiopsDiagnosticService:
                 "planIndex": plan_index,
                 "planLength": len(plan),
                 "executionFailed": execution_failed,
+                "consecutiveFailures": consecutive_failures,
+                "contract": contract,
                 "decision": "executor" if continue_execution else "report",
             },
         )
@@ -564,10 +619,42 @@ class AiopsDiagnosticService:
                 "planIndex": plan_index,
                 "planLength": len(plan),
                 "executionFailed": execution_failed,
+                "consecutiveFailures": consecutive_failures,
+                "contract": contract,
                 "decision": "executor" if continue_execution else "report",
             },
         )
-        return {"continue_execution": continue_execution, "events": events}
+        return {"continue_execution": continue_execution, "contract": contract, "events": events}
+
+    @staticmethod
+    def _determine_contract(
+        *,
+        plan_index: int,
+        plan_length: int,
+        execution_failed: bool,
+        consecutive_failures: int,
+        has_evidence: bool,
+    ) -> str:
+        """Determine the interaction contract for the next diagnostic step.
+
+        Four contracts adapted from LoopX state-interaction-model:
+
+        * ``bounded_delivery`` — plan not exhausted, last step succeeded: continue normally.
+        * ``autonomous_replan`` — ≥2 consecutive failures: abandon current plan step,
+          trigger KB-based alternative search in the executor.
+        * ``outcome_floor_recovery`` — a failure occurred but zero evidence has been
+          collected: fall back to a minimum-viability KB retrieval so the report
+          has at least document-based findings.
+        * ``report`` — plan exhausted: proceed to report generation.
+        """
+        plan_exhausted = plan_index >= plan_length
+        if not plan_exhausted and consecutive_failures == 0:
+            return "bounded_delivery"
+        if consecutive_failures >= 2:
+            return "autonomous_replan"
+        if execution_failed and not has_evidence:
+            return "outcome_floor_recovery"
+        return "report"
 
     async def _report(self, state: AiopsDiagnosticState) -> dict[str, object]:
         task_id = str(state["task_id"])
