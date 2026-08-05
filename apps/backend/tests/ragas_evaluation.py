@@ -73,12 +73,13 @@ _ENV_FILE = _TEST_DIR / ".env.test"
 
 load_dotenv(_ENV_FILE)
 
-StrategyId = Literal["vector-only", "bm25-only", "hybrid", "hybrid+rerank"]
+StrategyId = Literal["vector-only", "bm25-only", "hybrid", "hybrid+rerank", "cag-kvcache"]
 ALL_STRATEGIES: tuple[StrategyId, ...] = (
     "vector-only",
     "bm25-only",
     "hybrid",
     "hybrid+rerank",
+    "cag-kvcache",
 )
 
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"
@@ -647,6 +648,26 @@ async def run_evaluation(
     )
     print(f"      Chunks corpus: {len(chunks_corpus)} chunks")
 
+    # ── CAG: one-time local model load + KV Cache precomputation ──
+    cag_state: dict[str, Any] | None = None
+    if "cag-kvcache" in strategies:
+        from tests.cag_runner import (  # type: ignore[assignment]
+            answer_question as _cag_answer,
+            ensure_model,
+            prepare_cache,
+        )
+
+        print("\n[cag] Initializing local model + KV Cache (one-time setup)...")
+        ensure_model()
+        kv, kv_len, cache_setup_sec = await asyncio.to_thread(prepare_cache)
+        cag_state = {
+            "kv": kv,
+            "kv_len": kv_len,
+            "cache_setup_sec": cache_setup_sec,
+            "answer_fn": _cag_answer,
+        }
+        print(f"[cag] Ready — cache setup took {cache_setup_sec:.1f}s\n")
+
     # Strategy dispatch
     strategy_runners: dict[str, Any] = {
         "vector-only": lambda q: _retrieve_vector_only(
@@ -659,6 +680,7 @@ async def run_evaluation(
         "hybrid+rerank": lambda q: _retrieve_hybrid_rerank(
             vector_store, embedding_model, chunks_corpus, rerank_model, q, owner_id, kb_ids
         ),
+        "cag-kvcache": lambda q: ([], 0.0),  # handled separately via cag_state
     }
 
     eval_runs: dict[str, EvalRun] = {}
@@ -676,15 +698,26 @@ async def run_evaluation(
             ground_truth = cast(str, qa["ground_truth"])
             print(f"  [{idx+1}/{len(qa_pairs)}] {question[:70]}...")
 
+            cache_load_ms = 0.0
             try:
-                # Retrieve
-                contexts, retrieval_ms = await retriever(question)
+                if strategy_id == "cag-kvcache" and cag_state:
+                    # CAG: local model generates directly from KV Cache (no retrieval)
+                    contexts, answer, gen_sec = await asyncio.to_thread(
+                        cag_state["answer_fn"],
+                        cag_state["kv"],
+                        cag_state["kv_len"],
+                        question,
+                    )
+                    retrieval_ms = 0.0
+                    generation_ms = gen_sec * 1000
+                    cache_load_ms = (cag_state["cache_setup_sec"] * 1000) / max(len(qa_pairs), 1)
+                else:
+                    # Standard: retrieve → generate
+                    contexts, retrieval_ms = await retriever(question)
+                    answer, generation_ms = await _generate_answer(chat_model, question, contexts)
             except Exception as exc:
-                print(f"      [WARN] Retrieval failed: {exc}")
-                contexts, retrieval_ms = [], 0.0
-
-            # Generate answer
-            answer, generation_ms = await _generate_answer(chat_model, question, contexts)
+                print(f"      [WARN] Failed: {exc}")
+                contexts, retrieval_ms, answer, generation_ms = [], 0.0, "", 0.0
 
             # Deterministic metrics
             mrr_val = _mrr(contexts, ground_truth)
@@ -721,6 +754,7 @@ async def run_evaluation(
                 "latency": {
                     "retrievalMs": round(retrieval_ms, 1),
                     "generationMs": round(generation_ms, 1),
+                    **({"cacheLoadMs": round(cache_load_ms, 1)} if cache_load_ms > 0 else {}),
                 },
                 "errorCategory": error_cat,
             }
@@ -732,10 +766,11 @@ async def run_evaluation(
             cr = llm_scores["context_recall"]
             ar = llm_scores["answer_relevancy"]
             fai = llm_scores["faithfulness"]
+            gen_display = f" gen={generation_ms:.0f}ms" if generation_ms > 0 else ""
             print(
                 f"      CP={cp:.2f} CP@3={cp3:.2f} CR={cr:.2f} AR={ar:.2f} F={fai:.2f} "
                 f"MRR={mrr_val:.2f} NDCG={ndcg_val:.2f} R@5={recall_val:.2f} "
-                f"| {retrieval_ms:.0f}ms | [{error_cat}]"
+                f"| ret={retrieval_ms:.0f}ms{gen_display} | [{error_cat}]"
             )
 
             await asyncio.sleep(0.3)  # rate limit
@@ -760,6 +795,13 @@ async def run_evaluation(
             sum(cast(float, cast(dict[str, object], i["latency"])["generationMs"]) for i in run.per_item)
             / max(len(run.per_item), 1), 1
         )
+        # CAG-specific: one-time cache load amortized across questions
+        cache_loads = [
+            cast(float, cast(dict[str, object], i["latency"]).get("cacheLoadMs", 0))
+            for i in run.per_item
+        ]
+        if any(v > 0 for v in cache_loads):
+            agg["avg_cache_load_ms"] = round(sum(cache_loads) / len(cache_loads), 1)
 
         # Error distribution
         error_dist: dict[str, int] = defaultdict(int)
@@ -905,8 +947,12 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     print(f"  Judge: {config.get('judgeModel', 'N/A')}  |  Rerank: {config.get('rerankModel', 'N/A')}")
     print()
 
+    # Dynamically determine which strategies are present in the data
+    present_strategies = [sid for sid in ALL_STRATEGIES if sid in strategies_data]
+    n_cols = len(present_strategies)
+
     # Metric comparison table
-    metric_labels = [
+    metric_labels: list[tuple[str, str, bool]] = [
         ("context_precision", "Context Precision", True),
         ("context_precision_at_3", "Context Prec@3", True),
         ("context_recall", "Context Recall", True),
@@ -917,35 +963,44 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
         ("recall_at_5", "Recall@5", False),
         ("avg_retrieval_ms", "Retrieval (ms)", False),
         ("avg_generation_ms", "Generation (ms)", False),
+        ("avg_cache_load_ms", "Cache Load (ms)", False),
     ]
+    # Latency metrics should not compete for "best"
+    _latency_keys = {"avg_retrieval_ms", "avg_generation_ms", "avg_cache_load_ms"}
 
     # Header
     header = "  │ {:<20}".format("指标")
-    for sid in ALL_STRATEGIES:
-        if sid in strategies_data:
-            header += " │ {:>10}".format(sid[:10])
+    for sid in present_strategies:
+        header += " │ {:>12}".format(sid[:12])
     header += " │ {:>12} │".format("Clean-room")
     print(header)
-    print("  ├" + "─" * 21 + "┼" + "─" * 12 + "┼" + "─" * 30 + "┼" + "─" * 14 + "┤")
+    # Dynamic separator
+    sep = "  ├" + "─" * 21 + "┼" + "─" * 14 + "┼".join(["─" * 12] * (n_cols - 1))
+    if n_cols > 0:
+        sep += "─" * 14 + "┼"
+    sep += "─" * 14 + "┤"
+    print(sep)
 
     # Rows
     for key, label, is_llm in metric_labels:
         row = "  │ {:<20}".format(label)
         best_val = -1.0
         best_sid = ""
-        for sid in ALL_STRATEGIES:
+        for sid in present_strategies:
             sdata = strategies_data.get(sid)
             if sdata and isinstance(sdata, dict):
                 metrics = cast(dict[str, object], sdata.get("metrics", {}))
                 val = metrics.get(key)
                 if isinstance(val, (int, float)):
-                    row += " │ {:>10.4f}".format(float(val))
-                    if key not in ("avg_retrieval_ms", "avg_generation_ms"):
+                    row += " │ {:>12.4f}".format(float(val))
+                    if key not in _latency_keys:
                         if float(val) > best_val:
                             best_val = float(val)
                             best_sid = sid
                 else:
-                    row += " │ {:>10}".format("—")
+                    row += " │ {:>12}".format("—")
+            else:
+                row += " │ {:>12}".format("—")
         # Clean-room column (only for LLM metrics)
         if is_llm:
             cr_avg = cast(dict[str, object], clean_room.get("averages", {}))
@@ -959,7 +1014,12 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
         row += " │"
         print(row)
 
-    print("  └" + "─" * 21 + "┴" + "─" * 12 + "┴" + "─" * 30 + "┴" + "─" * 14 + "┘")
+    # Dynamic bottom border
+    bottom = "  └" + "─" * 21 + "┴" + "─" * 14 + "┴".join(["─" * 12] * (n_cols - 1))
+    if n_cols > 0:
+        bottom += "─" * 14 + "┴"
+    bottom += "─" * 14 + "┘"
+    print(bottom)
     print()
     print("  Clean-room = 直接把标准答案作为上下文喂给 LLM，衡量生成质量上界")
     print("  LLM 指标 (CP/CR/F/AR) 用 DeepSeek 评分，确定性指标 (MRR/NDCG/R@5) 用 jieba token overlap 计算")
