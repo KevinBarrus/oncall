@@ -1,0 +1,4 @@
+
+# API keys for local tests
+.env*
+tests/.env.test

@@ -1,0 +1,109 @@
+{
+  "evaluatedAt": "2026-08-03T04:22:20.704478+00:00",
+  "qaPairs": [
+    {
+      "question": "Nginx 返回 502 Bad Gateway 错误，应该如何排查？",
+      "groundTruth": "排查 Nginx 502 错误的步骤：1) 检查后端服务是否正常运行，使用 systemctl status 或 ps aux 确认进程存活；2) 检查 Nginx 错误日志 /var/log/nginx/error.log，查看具体的 upstream 连接失败信息；3) 确认 Nginx upstream 配置中的后端地址和端口是否正确；4) 检查后端服务的连接数是否达到上限，可能需要调整 worker_connections 或后端连接池；5) 查看系统资源使用情况（CPU、内存、文件描述符），确认没有资源耗尽；6) 如果是 PHP-FPM，检查 php-fpm 进程是否存活且 socket 文件权限正确。",
+      "answer": "Nginx 返回 502 Bad Gateway 表示其作为反向代理时，无法从上游服务器获取有效响应。您可以按照以下步骤和常见原因进行排查：\n\n### 一、 核心排查步骤\n1. **检查后端服务状态**：使用 `systemctl status <service>` 或 `ps aux | grep <process>` 确认后端进程是否存活。\n2. **检查 Nginx 错误日志**：执行 `tail -f /var/log/nginx/error.log`，重点查看 \"upstream\" 相关的连接失败信息。\n3. **验证 upstream 配置**：检查 `nginx.conf` 中的 upstream 块，确认后端服务器的地址和端口配置正确。\n4. **检查连接数与系统资源**：\n   - 确认连接数是否达到上限，必要时调整 Nginx 的 `worker_connections` 或后端应用服务器的连接池大小。\n   - 使用 `top`、`free -h`、`df -h` 确认 CPU、内存、磁盘资源没有耗尽。\n   - 使用 `ulimit -n` 检查文件描述符限制。\n5. **特定场景排查**：\n   - **PHP-FPM 场景**：检查 php-fpm 进程是否存活（`systemctl status php-fpm`），并确认 socket 文件权限是否正确。\n   - **Kubernetes 场景**：使用 `kubectl` 命令查看 Pod 状态（`get pod`）、退出码（`describe pod`）、崩溃前日志（`logs --previous`）以及资源使用情况（`top pod`）。\n\n### 二、 常见错误日志及快速处理\n根据 Nginx 错误日志中的具体提示，可快速定位原因：\n\n| 日志现象 | 可能原因 | 快速检查 / 处理方案 |\n| :--- | :--- | :--- |\n| `connect() refused` | 后端服务未启动 | 使用 `systemctl status` 检查并启动后端服务 |\n| `upstream timed out` | 后端响应超时 | 调整 Nginx 的 `proxy_read_timeout` 参数 |\n| `no live upstreams` | 所有后端不可用 | 检查 upstream 配置是否正确 |\n| `SSL 握手失败` | 后端证书问题 | 检查 `proxy_ssl_verify` 配置 |\n\n*补充：在排查并解决 502 问题后，若为了减少磁盘 I/O 并提升响应速度，可适当优化 Nginx 的缓冲区配置（如调整 `proxy_buffer_size`、`proxy_buffers` 等）。*",
+      "contextCount": 5,
+      "contexts": [
+        "### 排查步骤  \n1. **检查后端服务状态**：使用 `systemctl status <service>` 或 `ps aux | grep <process>` 确认后端进程是否存活。\n2. **检查 Nginx 错误日志**：`tail -f /var/log/nginx/error.log`，查看 \"upstream\" 相关的连接失败信息。常见错误包括 \"connect() failed (111: Connection refused)\" 和 \"upstream timed out (110: Connection timed out)\"。\n3. **验证 upstream ",
+        "# Nginx 故障排查手册  \n## Nginx 502 Bad Gateway 排查  \nNginx 返回 502 Bad Gateway 表示作为反向代理时，无法从上游服务器获取有效响应。",
+        "### 常见原因速查  \n| 现象 | 可能原因 | 快速检查 |\n|------|----------|----------|\n| connect() refused | 后端服务未启动 | systemctl status |\n| upstream timed out | 后端响应超时 | 调整 proxy_read_timeout |\n| no live upstreams | 所有后端不可用 | 检查 upstream 配置 |\n| SSL 握手失败 | 后端证书问题 | 检查 proxy_ssl_verify |",
+        "### 缓冲区优化  \n```\nproxy_buffer_size 16k;\nproxy_buffers 4 64k;\nproxy_busy_buffers_size 128k;\n```  \n增大缓冲区可以减少磁盘 I/O，提升响应速度。",
+        "### 快速诊断命令  \n```bash\n# 查看 Pod 状态\nkubectl get pod <pod-name> -o yaml\n\n# 查看退出码\nkubectl describe pod <pod-name> | grep -A5 \"Last State\"\n\n# 查看崩溃前日志\nkubectl logs <pod-name> --previous --tail=50\n\n# 查看资源使用\nkubectl top pod <pod-name>\n```"
+      ]
+    },
+    {
+      "question": "MySQL 数据库出现大量慢查询，如何定位和优化？",
+      "groundTruth": "MySQL 慢查询优化流程：1) 开启慢查询日志 slow_query_log，设置合适的 long_query_time 阈值（如 1 秒）；2) 使用 pt-query-digest 或 mysqldumpslow 工具分析慢查询日志，找出执行频率高且耗时长的 SQL；3) 使用 EXPLAIN 分析具体 SQL 的执行计划，关注 type、rows、Extra 字段；4) 检查是否缺少索引，为 WHERE、JOIN、ORDER BY 涉及的列添加合适的索引；5) 对于大表，考虑分区表或归档历史数据；6) 检查 MySQL 配置参数如 innodb_buffer_pool_size、query_cache_size 是否合理；7) 对于复杂查询，考虑改写 SQL 或使用读写分离。",
+      "answer": "根据提供的检索文档内容，**不足以回答**“MySQL 数据库出现大量慢查询，如何定位和优化”的问题。\n\n文档中仅提及在可观测性监控中，数据库的 SLI（服务质量指标）应关注“查询延迟”和“连接数饱和度”，以及故障发生后的告警分级与复盘流程，但**并未包含**关于 MySQL 慢查询的具体定位步骤和优化方法。",
+      "contextCount": 5,
+      "contexts": [
+        "### 缓冲区优化  \n```\nproxy_buffer_size 16k;\nproxy_buffers 4 64k;\nproxy_busy_buffers_size 128k;\n```  \n增大缓冲区可以减少磁盘 I/O，提升响应速度。",
+        "# 可观测性与监控告警最佳实践  \n## SLI / SLO / SLA 概念  \n### SLI（Service Level Indicator）  \nSLI 是服务质量的量化指标。常见 SLI 包括：  \n- **可用性**：成功请求数 / 总请求数，通常以百分比表示（如 99.9%）\n- **延迟**：请求响应时间的 P50、P95、P99 分位数\n- **错误率**：错误响应数 / 总请求数\n- **吞吐量**：每秒处理的请求数（QPS/RPS）  \n对于不同类型的服务，应该选择不同的 SLI：\n- HTTP API 服务：关注状态码 5xx 比例、P99 延迟\n- 消息队列消费者：关",
+        "### 告警分级  \n| 级别 | 响应时间 | 通知方式 | 举例 |\n|------|----------|----------|------|\n| Critical | 5 分钟内 | 电话 + 即时通讯 | 核心服务宕机、数据库不可用 |\n| Warning | 30 分钟内 | 即时通讯 | CPU > 90%、磁盘 > 85% |\n| Info | 工作时间 | 邮件/Ticket | 证书即将过期、配置变更通知 |",
+        "### 复盘原则  \n- **Blameless**：不对个人追责，关注流程和系统的改进\n- **实事求是**：基于数据和时间线，不做主观臆断\n- **闭环跟踪**：每个 Action Item 必须有明确的负责人、截止日期和验证标准",
+        "## 故障复盘（Postmortem）  \n### 复盘流程  \n1. **时间线梳理**：按时间顺序记录故障从发生到完全恢复的所有关键事件，精确到分钟\n2. **影响评估**：统计受影响用户数、持续时长、业务损失\n3. **根因分析**：使用 5-Why 方法追溯根本原因，区分直接原因和系统性问题\n4. **响应评估**：告警是否及时触发、人员是否及时响应、处理流程是否顺畅\n5. **Action Items 制定**：每项必须是可执行、有负责人和截止日期的具体任务\n6. **知识沉淀**：将复盘文档归档到知识库，建立故障模式库"
+      ]
+    },
+    {
+      "question": "Kubernetes Pod 一直处于 CrashLoopBackOff 状态，怎么排查？",
+      "groundTruth": "排查 CrashLoopBackOff 的步骤：1) kubectl describe pod <pod-name> 查看 Events 部分，了解容器退出原因和退出码；2) kubectl logs <pod-name> --previous 查看上一次崩溃容器的日志；3) 检查容器的启动命令和参数是否正确，entrypoint 是否有语法错误；4) 检查资源限制（CPU/Memory limits）是否过小导致 OOMKilled；5) 检查健康检查探针（liveness/readiness probe）配置是否合理，可能探针失败导致容器被重启；6) 检查 ConfigMap 或 Secret 是否正确挂载，缺少关键配置会导致启动失败；7) 检查镜像是否正确，镜像拉取策略是否导致使用了错误的镜像版本。",
+      "answer": "Kubernetes Pod 处于 `CrashLoopBackOff` 状态表示容器启动后立即崩溃，Kubernetes 不断尝试重启但每次都以失败告终。您可以按照以下步骤和命令进行排查：\n\n### 一、 快速诊断命令\n```bash\n# 查看 Pod 状态\nkubectl get pod <pod-name> -o yaml\n\n# 查看退出码\nkubectl describe pod <pod-name> | grep -A5 \"Last State\"\n\n# 查看崩溃前日志\nkubectl logs <pod-name> --previous --tail=50\n\n# 查看资源使用\nkubectl top pod <pod-name>\n```\n\n### 二、 详细排查步骤\n1. **查看 Pod 详细信息**：执行 `kubectl describe pod <pod-name>`，重点关注 Events 部分的退出原因和退出码。常见退出码包括：137（OOMKilled）、1（应用错误）、143（SIGTERM）。\n2. **查看崩溃容器日志**：执行 `kubectl logs <pod-name> --previous` 查看上一次崩溃容器的标准输出。如果容器启动后瞬间崩溃，当前日志可能为空，必须加上 `--previous` 参数。\n3. **检查启动命令**：验证 Dockerfile 中的 CMD/ENTRYPOINT 是否正确。如果使用了 shell 语法但镜像中没有对应的 shell，启动会立即失败。\n4. **检查资源限制**：通过 `kubectl describe pod` 查看 Limits 和 Requests。如果 memory limit 设置过低（如 64Mi），应用（如 Java 应用）可能无法启动，需确认是否存在 OOMKilled。\n5. **检查健康检查探针**：liveness probe 配置不当可能导致容器被误杀。确认 `initialDelaySeconds` 足够长（至少 30-60 秒），且 `periodSeconds` 不要太短。\n6. **检查 ConfigMap/Secret**：如果应用依赖配置文件，确认 ConfigMap 已正确创建并挂载；确认 Secret 中的敏感信息（如数据库密码等）是否正确。\n7. **检查镜像问题**：确认镜像名称和标签是否正确，以及 `imagePullPolicy`（Always/IfNotPresent）设置是否符合预期。",
+      "contextCount": 5,
+      "contexts": [
+        "### 排查步骤  \n1. **查看 Pod 详细信息**：`kubectl describe pod <pod-name>`，重点关注 Events 部分的退出原因和退出码。常见退出码：137（OOMKilled）、1（应用错误）、143（SIGTERM）。\n2. **查看崩溃容器日志**：`kubectl logs <pod-name> --previous`，这个命令可以查看上一次崩溃容器的标准输出。如果容器启动后瞬间崩溃，当前日志可能为空，必须用 `--previous`。\n3. **检查启动命令**：验证 Dockerfile 中的 CMD/ENTRYPOINT 是否正确。如果使用了",
+        "### 快速诊断命令  \n```bash\n# 查看 Pod 状态\nkubectl get pod <pod-name> -o yaml\n\n# 查看退出码\nkubectl describe pod <pod-name> | grep -A5 \"Last State\"\n\n# 查看崩溃前日志\nkubectl logs <pod-name> --previous --tail=50\n\n# 查看资源使用\nkubectl top pod <pod-name>\n```",
+        "# Kubernetes Pod 故障排查手册  \n## CrashLoopBackOff 排查  \nPod 处于 CrashLoopBackOff 状态表示容器启动后立即崩溃，Kubernetes 不断尝试重启但每次都以失败告终。",
+        "## ImagePullBackOff 排查  \n1. 检查镜像名称是否正确（仓库地址、镜像名、标签）。\n2. 如果是私有仓库，确认 imagePullSecrets 已正确配置。\n3. 使用 `docker pull <image>` 在本地验证镜像是否可拉取。\n4. 检查网络策略是否阻止了节点访问镜像仓库。",
+        "### 常见原因  \n1. **资源不足**：集群中所有节点的可用 CPU/内存不足以满足 Pod 的 requests。使用 `kubectl describe pod` 查看 Events 中是否有 \"Insufficient cpu\" 或 \"Insufficient memory\"。\n2. **节点选择器不匹配**：nodeSelector 或 nodeAffinity 规则导致没有符合条件的节点。\n3. **污点和容忍度**：节点有 taint 但 Pod 没有对应的 toleration。\n4. **PVC 绑定失败**：如果 Pod 依赖 PersistentVolumeClaim"
+      ]
+    },
+    {
+      "question": "线上服务 CPU 使用率突然飙升至 100%，应该如何应急处置？",
+      "groundTruth": "CPU 100% 应急处置流程：1) 第一时间确认影响范围，检查监控平台确认是单机还是集群范围的问题；2) 如果是单机问题，先通过 top 命令找到占用 CPU 最高的进程和线程；3) 使用 jstack（Java）或 pstack/perf top 查看高 CPU 线程的调用栈，定位具体代码路径；4) 查看应用日志和 GC 日志，判断是否是 Full GC 频繁导致，如果是则先导出堆 dump；5) 如果是外部依赖导致的（如死循环等待），考虑重启服务快速恢复；6) 如果是流量突增导致，立即触发扩容或限流；7) 恢复后保留现场（线程 dump、堆 dump、日志）用于根因分析。",
+      "answer": "根据提供的文档内容，**不足以提供完整的 CPU 使用率飙升至 100% 的应急处置方案**（如扩容、限流、降级或终止异常进程等具体止血操作）。但根据文档，可以采取以下相关的告警响应与排查诊断措施：\n\n1. **告警响应**：CPU > 90% 属于 **Warning** 级别告警，要求在 **30 分钟内**响应，通知方式为**即时通讯**。\n2. **资源检查与诊断**：\n   - **常规环境**：使用 `top` 命令检查 CPU 资源的具体占用情况。\n   - **Kubernetes 环境**：使用 `kubectl top pod <pod-name>` 查看 Pod 的资源使用情况；并结合 `kubectl get pod`、`kubectl describe pod` 查看 Pod 状态与退出码，或使用 `kubectl logs <pod-name> --previous --tail=50` 查看崩溃前日志。\n3. **关联排查**：\n   - 检查后端服务进程是否存活（`systemctl status` 或 `ps aux`）。\n   - 检查后端服务的连接数是否达到上限。\n   - 检查 Nginx 错误日志（`tail -f /var/log/nginx/error.log`）排查是否有连接失败或超时信息。",
+      "contextCount": 5,
+      "contexts": [
+        "### 排查步骤  \n1. **检查后端服务状态**：使用 `systemctl status <service>` 或 `ps aux | grep <process>` 确认后端进程是否存活。\n2. **检查 Nginx 错误日志**：`tail -f /var/log/nginx/error.log`，查看 \"upstream\" 相关的连接失败信息。常见错误包括 \"connect() failed (111: Connection refused)\" 和 \"upstream timed out (110: Connection timed out)\"。\n3. **验证 upstream ",
+        "### 缓冲区优化  \n```\nproxy_buffer_size 16k;\nproxy_buffers 4 64k;\nproxy_busy_buffers_size 128k;\n```  \n增大缓冲区可以减少磁盘 I/O，提升响应速度。",
+        "### 告警分级  \n| 级别 | 响应时间 | 通知方式 | 举例 |\n|------|----------|----------|------|\n| Critical | 5 分钟内 | 电话 + 即时通讯 | 核心服务宕机、数据库不可用 |\n| Warning | 30 分钟内 | 即时通讯 | CPU > 90%、磁盘 > 85% |\n| Info | 工作时间 | 邮件/Ticket | 证书即将过期、配置变更通知 |",
+        "### 静态文件缓存  \n```\nlocation ~* \\.(jpg|jpeg|png|gif|ico|css|js)$ {\nexpires 30d;\nadd_header Cache-Control \"public, immutable\";\n}\n```  \n为静态资源配置长期缓存，减少重复请求。",
+        "### 快速诊断命令  \n```bash\n# 查看 Pod 状态\nkubectl get pod <pod-name> -o yaml\n\n# 查看退出码\nkubectl describe pod <pod-name> | grep -A5 \"Last State\"\n\n# 查看崩溃前日志\nkubectl logs <pod-name> --previous --tail=50\n\n# 查看资源使用\nkubectl top pod <pod-name>\n```"
+      ]
+    },
+    {
+      "question": "Redis 内存使用率接近 maxmemory 上限，应该如何处理？",
+      "groundTruth": "Redis 内存优化方案：1) 使用 INFO memory 查看内存使用详情，确认是数据占用还是缓冲区/碎片占用；2) 使用 redis-cli --bigkeys 扫描大 Key，评估是否可以拆分或删除；3) 检查 Key 的过期策略（maxmemory-policy），根据业务场景选择 allkeys-lru 或 volatile-lru；4) 对于可压缩的数据，考虑使用压缩算法或更换数据结构（如用 HyperLogLog 代替 Set 做去重统计）；5) 检查是否有未设置 TTL 的 Key 持续增长，添加合理的过期时间；6) 短期可通过增加内存或扩容集群解决，长期需要优化数据模型；7) 检查客户端连接数和输出缓冲区占用，是否有慢客户端导致输出缓冲区堆积。",
+      "answer": "根据提供的检索文档内容，没有关于 Redis 内存使用率或 maxmemory 上限处理的相关信息，因此无法回答您的问题。",
+      "contextCount": 5,
+      "contexts": [
+        "### 静态文件缓存  \n```\nlocation ~* \\.(jpg|jpeg|png|gif|ico|css|js)$ {\nexpires 30d;\nadd_header Cache-Control \"public, immutable\";\n}\n```  \n为静态资源配置长期缓存，减少重复请求。",
+        "### 缓冲区优化  \n```\nproxy_buffer_size 16k;\nproxy_buffers 4 64k;\nproxy_busy_buffers_size 128k;\n```  \n增大缓冲区可以减少磁盘 I/O，提升响应速度。",
+        "### 告警收敛与抑制  \n使用 Alertmanager 的 route 配置实现告警分组：  \n```yaml\nroute:\ngroup_by: ['alertname', 'service']\ngroup_wait: 30s\ngroup_interval: 5m\nrepeat_interval: 4h\n```  \ninhibit_rules 实现告警抑制，例如机器宕机时抑制该机器上所有应用告警：  \n```yaml\ninhibit_rules:\n- source_match:\nalertname: NodeDown\ntarget_match_re:\nalertname: '.*'\nequ",
+        "### 告警分级  \n| 级别 | 响应时间 | 通知方式 | 举例 |\n|------|----------|----------|------|\n| Critical | 5 分钟内 | 电话 + 即时通讯 | 核心服务宕机、数据库不可用 |\n| Warning | 30 分钟内 | 即时通讯 | CPU > 90%、磁盘 > 85% |\n| Info | 工作时间 | 邮件/Ticket | 证书即将过期、配置变更通知 |",
+        "## Prometheus 告警规则设计  \n### 服务可用性监控  \n```yaml\ngroups:\n- name: service_availability\nrules:\n- alert: ServiceDown\nexpr: up == 0\nfor: 2m\nlabels:\nseverity: critical\nannotations:\nsummary: \"服务 {{ $labels.job }} 不可达\"\ndescription: \"服务 {{ $labels.job }} 已宕机超过 2 分钟，请立即排查。\"\n```"
+      ]
+    }
+  ],
+  "scores": {
+    "metricAverages": {
+      "context_precision": 0.288,
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.46,
+      "context_recall": 0.4
+    },
+    "perItem": {
+      "context_precision": [
+        0.74,
+        0.0,
+        0.6,
+        0.1,
+        0.0
+      ],
+      "faithfulness": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "answer_relevancy": [
+        1.0,
+        0.0,
+        1.0,
+        0.3,
+        0.0
+      ],
+      "context_recall": [
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    "evaluatedAt": "2026-08-03T04:22:20.704106+00:00"
+  }
+}
