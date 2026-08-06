@@ -29,6 +29,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
+from super_ai.aiops.sop_belief import SopBeliefRegistry
 from super_ai.alerts import (
     ActiveAlert,
     ActiveAlertProvider,
@@ -1493,6 +1494,60 @@ def create_app(
         )
         return success_response(request, _diagnostic_task_payload(task, reports=reports))
 
+    @app.post("/aiops/diagnostics/{diagnostic_id}/feedback")
+    async def submit_diagnostic_feedback(
+        request: Request,
+        diagnostic_id: str,
+        user: Annotated[UserRecord, Depends(_current_user)],
+    ) -> object:
+        body = await request.json()
+        rating = str(body.get("rating") or "")
+        if rating not in ("helpful", "not_helpful"):
+            return error_response(
+                request,
+                "VALIDATION_INVALID_ARGUMENT",
+                detail="rating must be 'helpful' or 'not_helpful'",
+            )
+        # verify ownership
+        task = await _memory_repositories(request).diagnostics.get_task(
+            owner_user_id=user.id,
+            task_id=diagnostic_id,
+        )
+        if task is None:
+            return error_response(
+                request,
+                "RESOURCE_NOT_FOUND",
+                detail="Diagnostic task not found.",
+            )
+        # extract context from the alert payload
+        alert = task.input_payload.get("alert") or {}
+        if isinstance(alert, dict):
+            severity = str(alert.get("severity") or alert.get("level") or "")
+            service = str(alert.get("service") or alert.get("target") or "")
+        else:
+            severity = service = ""
+        alert_context = f"{severity}:{service}"
+        # record manual feedback for every SOP used
+        registry = _sop_belief_registry(request)
+        updated = registry.record_feedback(
+            task_id=diagnostic_id, rating=rating, context=alert_context
+        )
+        return success_response(
+            request,
+            {
+                "rating": rating,
+                "taskId": diagnostic_id,
+                "updatedSops": [
+                    {
+                        "sopId": belief.sop_id,
+                        "successProbability": round(belief.success_probability, 4),
+                        "observations": belief.observations,
+                    }
+                    for belief in updated
+                ],
+            },
+        )
+
     @app.get("/aiops/diagnostics/{diagnostic_id}/evidence-chain")
     async def get_aiops_evidence_chain(
         request: Request,
@@ -2167,9 +2222,18 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
                 repositories=_memory_repositories(request),
                 index_task_scheduler=_index_task_scheduler(request),
             ),
+            sop_belief_registry=_sop_belief_registry(request),
         )
         request.app.state.aiops_diagnostic_runner = runner
     return runner
+
+
+def _sop_belief_registry(request: Request) -> SopBeliefRegistry:
+    registry = getattr(request.app.state, "sop_belief_registry", None)
+    if registry is None:
+        registry = SopBeliefRegistry()
+        request.app.state.sop_belief_registry = registry
+    return registry
 
 
 def _document_indexing_service(request: Request) -> DocumentIndexingService:

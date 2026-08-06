@@ -15,6 +15,16 @@ import { createApiClient } from "../api/apiClient";
 import { createSseClient } from "../api/sseClient";
 import { API_BASE_URL } from "../config";
 
+export interface AiopsFeedbackResponse {
+  rating: string;
+  taskId: string;
+  updatedSops: Array<{
+    sopId: string;
+    successProbability: number;
+    observations: number;
+  }>;
+}
+
 export interface AiopsClient {
   cancelBackgroundJob?(jobId: string): Promise<BackgroundJob>;
   createDiagnostic(request: CreateAiopsDiagnosticRequest): Promise<AiopsDiagnosticSummary>;
@@ -24,6 +34,7 @@ export interface AiopsClient {
   listDiagnostics(): Promise<AiopsDiagnosticHistoryResponse>;
   saveDiagnosticCase(diagnosticId: string): Promise<SaveAiopsDiagnosticCaseResponse>;
   streamDiagnostic(diagnosticId: string): AsyncIterable<SseEvent>;
+  submitFeedback(diagnosticId: string, rating: "helpful" | "not_helpful"): Promise<AiopsFeedbackResponse>;
 }
 
 export interface CreateAiopsClientOptions {
@@ -58,6 +69,11 @@ export function createAiopsClient(options: CreateAiopsClientOptions = {}): Aiops
       api.request<SaveAiopsDiagnosticCaseResponse>(`/aiops/diagnostics/${diagnosticId}:save-to-knowledge`, {
         method: "POST"
       }),
-    streamDiagnostic: (diagnosticId) => sse.stream(`/aiops/diagnostics/${diagnosticId}:stream`, { method: "POST" })
+    streamDiagnostic: (diagnosticId) => sse.stream(`/aiops/diagnostics/${diagnosticId}:stream`, { method: "POST" }),
+    submitFeedback: (diagnosticId, rating) =>
+      api.request<AiopsFeedbackResponse>(`/aiops/diagnostics/${diagnosticId}/feedback`, {
+        body: JSON.stringify({ rating }),
+        method: "POST"
+      })
   };
 }

@@ -36,6 +36,7 @@ export const useAiopsStore = defineStore("aiops", () => {
   const isRunning = ref(false);
   const errorMessage = ref<string | null>(null);
   const savedCaseDocumentId = ref<string | null>(null);
+  const feedbackState = ref<"idle" | "submitting" | "submitted">("idle");
 
   function reportError(error: unknown): void {
     const message = toUserFacingError(error);
@@ -148,6 +149,19 @@ export const useAiopsStore = defineStore("aiops", () => {
     });
   }
 
+  async function submitFeedback(rating: "helpful" | "not_helpful"): Promise<void> {
+    const diagnosticId = activeDiagnosticId.value;
+    if (diagnosticId === null) return;
+    feedbackState.value = "submitting";
+    try {
+      await client.submitFeedback(diagnosticId, rating);
+      feedbackState.value = "submitted";
+    } catch (error) {
+      reportError(error);
+      feedbackState.value = "idle";
+    }
+  }
+
   return {
     activeDiagnosticId,
     activeAlerts,
@@ -162,6 +176,8 @@ export const useAiopsStore = defineStore("aiops", () => {
     isRunning,
     liveEvents,
     savedCaseDocumentId,
+    feedbackState,
+    submitFeedback,
     initialize: async (): Promise<void> => {
       isLoading.value = true;
       errorMessage.value = null;
@@ -180,6 +196,7 @@ export const useAiopsStore = defineStore("aiops", () => {
       isLoading.value = true;
       errorMessage.value = null;
       liveEvents.value = [];
+      feedbackState.value = "idle";
       try {
         await loadEvidenceChain(diagnosticId);
       } catch (error) {

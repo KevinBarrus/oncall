@@ -40,6 +40,7 @@ class DiagnosticEvidence:
     sop_id: str
     context: str = ""
     outcome: Literal["success", "failure"] = "success"
+    source: Literal["auto", "manual"] = "auto"
     failure_mode: str = ""
     total_tokens: int = 0
     turns: int = 0
@@ -52,6 +53,11 @@ class DiagnosticEvidence:
     @property
     def success(self) -> bool:
         return self.outcome == "success"
+
+    @property
+    def weight(self) -> float:
+        """Manual feedback carries 3× the weight of automatic evidence."""
+        return 3.0 if self.source == "manual" else 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +93,16 @@ class SopBeliefState:
         return self.alpha / (self.alpha + self.beta)
 
     def update(self, evidence: DiagnosticEvidence) -> SopBeliefState:
-        """Incorporate one verified diagnostic trajectory."""
+        """Incorporate one verified diagnostic trajectory.
+
+        Manual feedback (source="manual") carries 3× the weight of automatic
+        evidence, so human judgment can quickly correct the posterior.
+        """
+        w = evidence.weight
         if evidence.success:
-            self.alpha += 1.0
+            self.alpha += w
         else:
-            self.beta += 1.0
+            self.beta += w
             if evidence.failure_mode:
                 self.failure_modes[evidence.failure_mode] = (
                     self.failure_modes.get(evidence.failure_mode, 0) + 1
@@ -254,6 +265,46 @@ class SopBeliefRegistry:
         self._trim_log(evidence.sop_id)
         self._persist()
         return belief
+
+    def record_feedback(
+        self, *, task_id: str, rating: str, context: str = ""
+    ) -> list[SopBeliefState]:
+        """Apply human feedback for a diagnostic task.
+
+        Finds all SOPs that were used in *task_id*, creates manual evidence
+        (3× weight), and updates their posteriors.  Returns the updated beliefs.
+        """
+        outcome: Literal["success", "failure"] = (
+            "success" if rating == "helpful" else "failure"
+        )
+        updated: list[SopBeliefState] = []
+        seen: set[str] = set()
+
+        for sop_id, entries in self._evidence_log.items():
+            for entry in entries:
+                if entry.get("task_id") != task_id:
+                    continue
+                if sop_id in seen:
+                    break
+                seen.add(sop_id)
+                evidence = DiagnosticEvidence(
+                    task_id=task_id,
+                    sop_id=sop_id,
+                    context=context or str(entry.get("context") or ""),
+                    outcome=outcome,
+                    source="manual",
+                    failure_mode=(
+                        entry.get("failure_mode", "")
+                        if outcome == "failure"
+                        else ""
+                    ),
+                    created_at=datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                )
+                updated.append(self.record(evidence))
+                break
+        return updated
 
     def get(self, sop_id: str) -> SopBeliefState | None:
         """Return the posterior belief for *sop_id*, or None."""

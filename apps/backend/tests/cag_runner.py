@@ -21,10 +21,10 @@ from pathlib import Path
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import DynamicCache, DynamicLayer
 
-# Allowlist DynamicCache for safe torch.load
-torch.serialization.add_safe_globals([DynamicCache, set])
+# Allowlist for safe torch.load (transformers 5.x uses DynamicLayer internally)
+torch.serialization.add_safe_globals([DynamicCache, DynamicLayer, set])
 
 # ---------------------------------------------------------------------------
 # paths & constants
@@ -108,7 +108,7 @@ def generate(
     model: AutoModelForCausalLM,
     input_ids: torch.Tensor,
     past_key_values: DynamicCache,
-    max_new_tokens: int = 300,
+    max_new_tokens: int = 500,
 ) -> torch.Tensor:
     """Greedy token-by-token generation from a pre-filled KV Cache.
 
@@ -149,10 +149,12 @@ def generate(
 
 
 def clean_up(kv: DynamicCache, origin_len: int) -> None:
-    """Truncate KV Cache back to `origin_len` to remove previous generation."""
-    for i in range(len(kv.key_cache)):
-        kv.key_cache[i] = kv.key_cache[i][:, :, :origin_len, :]
-        kv.value_cache[i] = kv.value_cache[i][:, :, :origin_len, :]
+    """Truncate KV Cache back to `origin_len` to remove previous generation.
+
+    Uses the transformers 5.x ``crop()`` API (replaces manual key/value tensor
+    slicing that was required in earlier versions).
+    """
+    kv.crop(origin_len)
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +197,12 @@ def _build_cache_prompt(documents_text: str) -> str:
     """
     return (
         f"<|im_start|>system\n"
-        f"你是一个运维专家助手。请严格根据提供的文档内容回答问题，给出简洁准确的答案。"
-        f"如果文档中没有相关信息，请明确说「文档中未涉及」。\n"
+        f"你是一个运维专家助手。请严格根据提供的文档内容回答问题。\n"
+        f"回答规则：\n"
+        f"- 📄 开头的内容 = 来自团队文档\n"
+        f"- 💡 开头的内容 = 来自运维常识（非团队文档）\n"
+        f"- 文档覆盖的部分，必须引用文档中的具体信息（如阈值、流程、历史案例）\n"
+        f"- 如果文档中没有相关信息，请明确说「文档中未涉及」\n"
         f"<|im_end|>\n"
         f"<|im_start|>user\n"
         f"以下是参考文档内容：\n"
@@ -234,7 +240,7 @@ def prepare_cache() -> tuple[DynamicCache, int, float]:
         print(f"[cag] Loading cached KV from {_CACHE_PATH.name}...")
         t0 = time.time()
         kv = torch.load(_CACHE_PATH, weights_only=True)
-        kv_len = kv.key_cache[0].shape[-2]
+        kv_len = kv.layers[0].get_seq_length()
         elapsed = time.time() - t0
         print(f"[cag] Cache loaded  kv_len={kv_len}  time={elapsed:.1f}s")
         return kv, kv_len, elapsed
@@ -246,7 +252,7 @@ def prepare_cache() -> tuple[DynamicCache, int, float]:
 
     t0 = time.time()
     kv = preprocess_knowledge(model, tokenizer, cache_prompt)
-    kv_len = kv.key_cache[0].shape[-2]
+    kv_len = kv.layers[0].get_seq_length()
     elapsed = time.time() - t0
 
     _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -291,4 +297,5 @@ def answer_question(
     # 4. Decode
     answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
-    return get_knowledge_text(), answer, gen_time
+    # Return as single-element list — evaluation framework iterates over contexts
+    return [get_knowledge_text()], answer, gen_time

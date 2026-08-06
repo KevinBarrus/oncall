@@ -72,6 +72,14 @@ function diagnoseAlert(alert: Parameters<typeof aiops.diagnoseAlert>[0]): void {
 function openCaseDocument(documentId: string): void {
   void router.push({ name: "knowledge", query: { documentId } });
 }
+
+const canSubmitFeedback = computed(
+  () =>
+    aiops.feedbackState === "idle" &&
+    aiops.activeTask !== null &&
+    !isEffectivelyRunning.value &&
+    activeReport.value !== null
+);
 </script>
 
 <template>
@@ -113,6 +121,33 @@ function openCaseDocument(documentId: string): void {
           :report="activeReport"
           :task-failed="aiops.activeTask?.status === 'failed'"
         />
+        <div
+          v-if="aiops.feedbackState !== 'idle' || canSubmitFeedback"
+          class="aiops-view__feedback"
+          aria-label="诊断反馈"
+        >
+          <p v-if="aiops.feedbackState === 'submitted'">✓ 感谢反馈，已记录</p>
+          <p v-else-if="aiops.feedbackState === 'submitting'">提交中…</p>
+          <template v-else>
+            <p>这个诊断报告对你有帮助吗？</p>
+            <div class="aiops-view__feedback-actions">
+              <button
+                class="aiops-view__feedback-btn aiops-view__feedback-btn--helpful"
+                :disabled="aiops.feedbackState !== 'idle'"
+                @click="aiops.submitFeedback('helpful')"
+              >
+                👍 有帮助
+              </button>
+              <button
+                class="aiops-view__feedback-btn aiops-view__feedback-btn--unhelpful"
+                :disabled="aiops.feedbackState !== 'idle'"
+                @click="aiops.submitFeedback('not_helpful')"
+              >
+                👎 没用
+              </button>
+            </div>
+          </template>
+        </div>
         <AiopsTimeline :events="aiops.liveEvents" :is-running="isEffectivelyRunning" />
       </main>
 
@@ -144,6 +179,14 @@ function openCaseDocument(documentId: string): void {
 .aiops-view__status-strip div:last-child { border-right: 0; }
 .aiops-view__status-strip span { color: var(--text-tertiary); font-size: 0.7rem; font-weight: 700; }
 .aiops-view__status-strip strong { color: var(--text-primary); font-size: 0.96rem; font-weight: 760; }
+.aiops-view__feedback { background: var(--surface); border-top: 1px solid var(--line); padding: 0.9rem 1rem; text-align: center; }
+.aiops-view__feedback p { color: var(--text-secondary); font-size: 0.82rem; margin: 0 0 0.55rem; }
+.aiops-view__feedback-actions { display: flex; gap: 0.6rem; justify-content: center; }
+.aiops-view__feedback-btn { background: var(--surface-raised); border: 1px solid var(--line); border-radius: 0.45rem; color: var(--text-primary); cursor: pointer; font-size: 0.82rem; font-weight: 660; padding: 0.45rem 1rem; transition: background 0.15s, border-color 0.15s; }
+.aiops-view__feedback-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.aiops-view__feedback-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.aiops-view__feedback-btn--helpful { border-color: var(--color-ok); }
+.aiops-view__feedback-btn--unhelpful { border-color: var(--color-warn); }
 @keyframes aiops-pulse { 0%, 100% { opacity: 0.28; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-0.18rem); } }
 @media (prefers-reduced-motion: reduce) { .aiops-view__pulse span { animation: none; } }
 @media (max-width: 1280px) { .aiops-view__console { grid-template-columns: minmax(18rem, 0.9fr) minmax(0, 1.1fr); grid-template-rows: minmax(0, 1fr) minmax(12rem, 0.55fr); } .aiops-view__right { border-top: 1px solid var(--line); grid-column: 1 / -1; } }

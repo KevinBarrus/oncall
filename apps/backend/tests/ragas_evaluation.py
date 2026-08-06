@@ -651,7 +651,7 @@ async def run_evaluation(
     # ── CAG: one-time local model load + KV Cache precomputation ──
     cag_state: dict[str, Any] | None = None
     if "cag-kvcache" in strategies:
-        from tests.cag_runner import (  # type: ignore[assignment]
+        from cag_runner import (
             answer_question as _cag_answer,
             ensure_model,
             prepare_cache,
