@@ -236,7 +236,6 @@ class AiopsDiagnosticService:
             retrieval_error = exc.message
 
         sop_hits: list[JsonDict] = []
-        belief_reranked = False
         if retrieval_result is not None:
             sop_hits = [_sop_hit_payload(hit) for hit in retrieval_result.results]
 
@@ -253,7 +252,6 @@ class AiopsDiagnosticService:
                 id_to_hit = {payload["documentId"]: payload for payload in sop_hits}
                 reranked = [id_to_hit[sid] for sid in reranked_ids if sid in id_to_hit]
                 if reranked != sop_hits:
-                    belief_reranked = True
                     sop_hits = reranked
                     events.append(
                         _task_status_event(
@@ -614,8 +612,12 @@ class AiopsDiagnosticService:
         progress = 70 if continue_execution else 80
         decision_messages: dict[str, str] = {
             "bounded_delivery": "continuing with the next bounded step",
-            "autonomous_replan": "2+ consecutive failures — triggering autonomous replan with KB fallback",
-            "outcome_floor_recovery": "execution failed with no evidence — falling back to KB-only recovery",
+            "autonomous_replan": (
+                "2+ consecutive failures — triggering autonomous replan with KB fallback"
+            ),
+            "outcome_floor_recovery": (
+                "execution failed with no evidence — falling back to KB-only recovery"
+            ),
             "report": "plan exhausted or partial evidence collected — moving to Report",
         }
         message = decision_messages.get(contract, f"contract={contract}")
@@ -850,12 +852,15 @@ class AiopsDiagnosticService:
             plan = _validated_plan(_model_text(response), available_tools)
         except Exception:
             plan = []
-        search_log_steps = [step for step in plan if step.get("tool") == "SearchLog"]
-        if not search_log_steps:
+        if not plan:
             return generic_plan, "generic"
-        return [self._normalized_search_log_step(search_log_steps[0], query)], (
-            "SOP-backed" if sop_hits else "generic"
-        )
+        normalized_plan = [
+            self._normalized_search_log_step(step, query)
+            if step.get("tool") == "SearchLog"
+            else step
+            for step in plan
+        ]
+        return normalized_plan, "SOP-backed" if sop_hits else "generic"
 
     def _generic_search_log_step(self, query: str) -> JsonDict:
         now_ms = int(_now().timestamp() * 1000)
@@ -1397,10 +1402,33 @@ def _tool_result_summary(tool_name: str, output: object) -> str:
             separators=(",", ":"),
         )
     return json.dumps(
-        {"recordCount": len(records), "records": records[:10]},
+        {"recordCount": len(records), "records": _representative_log_records(records)},
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _representative_log_records(records: Sequence[JsonDict], limit: int = 10) -> list[JsonDict]:
+    """保留长日志的首尾和高严重度记录，避免只截取开头而漏掉关键错误。"""
+    if len(records) <= limit:
+        return list(records)
+
+    priority = [
+        index
+        for index, record in enumerate(records)
+        if str(record.get("level") or "").upper() in {"ERROR", "FATAL", "CRITICAL"}
+        or record.get("exception")
+    ]
+    selected = {
+        *priority[:4],
+        *range(min(3, len(records))),
+        *range(max(0, len(records) - 3), len(records)),
+    }
+    for index in range(len(records)):
+        if len(selected) >= limit:
+            break
+        selected.add(index)
+    return [records[index] for index in sorted(selected)[:limit]]
 
 
 def _search_log_records(output: object) -> list[JsonDict]:

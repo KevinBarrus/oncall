@@ -13,6 +13,7 @@ from alembic import command
 from alembic.config import Config
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
+from super_ai.aiops.diagnostics import _representative_log_records, _validated_plan
 from super_ai.api.app import AiopsDiagnosticRunner, create_app
 from super_ai.llm import LlmProvider, RerankResult
 from super_ai.mcp_client import LocalMcpClient, McpClientError, McpToolDefinition
@@ -618,6 +619,37 @@ def _sop_hit(owner_user_id: str) -> VectorSearchResult:
         metadata={"kind": "sop"},
         score=0.92,
     )
+
+
+def test_validated_plan_keeps_multiple_allowed_tools() -> None:
+    plan = _validated_plan(
+        json.dumps(
+            {
+                "steps": [
+                    {"tool": "SearchLog", "arguments": {}, "purpose": "查日志"},
+                    {"tool": "QueryMetric", "arguments": {"metric": "latency"}},
+                ]
+            }
+        ),
+        ["SearchLog", "QueryMetric"],
+    )
+
+    assert [step["tool"] for step in plan] == ["SearchLog", "QueryMetric"]
+
+
+def test_representative_log_records_keeps_tail_and_severe_entries() -> None:
+    records = [
+        {"message": f"info-{index}", "level": "INFO"}
+        for index in range(12)
+    ]
+    records[7] = {"message": "fatal-in-middle", "level": "FATAL"}
+
+    selected = _representative_log_records(records)
+
+    assert len(selected) == 10
+    assert selected[0]["message"] == "info-0"
+    assert selected[-1]["message"] == "info-11"
+    assert any(item["message"] == "fatal-in-middle" for item in selected)
 
 
 async def _register(client: httpx.AsyncClient, email: str) -> dict[str, Any]:
