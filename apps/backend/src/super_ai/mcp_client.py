@@ -81,35 +81,36 @@ class LocalMcpClient:
 
     async def get_langchain_tools(self) -> list[Any]:
         await self.discover_tools()
-        client = MultiServerMCPClient(
-            cast(
-                Any,
-                {
-                    connection.name: {
-                        "transport": (
-                            "http" if connection.transport == "streamable_http" else "sse"
-                        ),
-                        "url": connection.url,
-                    }
-                    for connection in self._connections
-                },
-            ),
-            handle_tool_errors=False,
-        )
-        return await client.get_tools()
+        return [tool for _, tool in await self.get_langchain_tools_by_server()]
+
+    async def get_langchain_tools_by_server(self) -> list[tuple[str, Any]]:
+        tools: list[tuple[str, Any]] = []
+        for connection in self._connections:
+            client = MultiServerMCPClient(
+                cast(
+                    Any,
+                    {
+                        connection.name: {
+                            "transport": (
+                                "http" if connection.transport == "streamable_http" else "sse"
+                            ),
+                            "url": connection.url,
+                        }
+                    },
+                ),
+                handle_tool_errors=False,
+            )
+            tools.extend((connection.name, tool) for tool in await client.get_tools())
+        return tools
 
     async def discover_tools(self) -> list[McpToolDefinition]:
         definitions: list[McpToolDefinition] = []
-        seen: set[str] = set()
         for connection in self._connections:
             result = await self._run_connection(
                 connection,
                 lambda session: session.list_tools(),
             )
             for tool in result.tools:
-                if tool.name in seen:
-                    raise McpClientError(f"Duplicate MCP tool name: {tool.name}")
-                seen.add(tool.name)
                 definitions.append(
                     McpToolDefinition(
                         tool.name,
@@ -138,10 +139,44 @@ class LocalMcpClient:
         }
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self._call_tool(name, arguments)
+
+    async def call_tool_on_server(
+        self,
+        server_name: str,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        connection = next(
+            (item for item in self._connections if item.name == server_name),
+            None,
+        )
+        if connection is None:
+            raise McpClientError(f"MCP server is unavailable: {server_name}")
+        return await self._call_tool(name, arguments, connection=connection)
+
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        connection: McpServerConnection | None = None,
+    ) -> Any:
         started_at = monotonic()
         emit_event(logger, "mcp.tool.started", toolName=name, argumentKeys=sorted(arguments))
         try:
-            if len(self._connections) == 1:
+            if connection is not None:
+                result = await self._run_connection(
+                    connection,
+                    lambda session: session.call_tool(
+                        name,
+                        arguments,
+                        read_timeout_seconds=timedelta(
+                            seconds=connection.timeout_seconds
+                        ),
+                    ),
+                )
+            elif len(self._connections) == 1:
                 connection = self._connections[0]
                 result = await self._run(
                     lambda session: session.call_tool(

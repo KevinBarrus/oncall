@@ -37,6 +37,7 @@ from super_ai.retrieval import (
     KnowledgeRetrievalToolInput,
     KnowledgeRetrievalToolResult,
 )
+from super_ai.tool_registry import ToolRegistry
 
 
 class AiopsDiagnosticState(TypedDict, total=False):
@@ -183,6 +184,37 @@ class AiopsDiagnosticService:
             raise McpClientError("MCP client is unavailable.")
         return self._mcp_client
 
+    async def _tool_registry(self, state: AiopsDiagnosticState) -> ToolRegistry:
+        owner_user_id = str(state["owner_user_id"])
+        accessible_ids = cast(Sequence[str], state["accessible_knowledge_base_ids"])
+        registry = ToolRegistry()
+
+        async def retrieve(arguments: dict[str, Any]) -> object:
+            result = await self._retrieval_tool.run(
+                KnowledgeRetrievalToolInput(
+                    query=str(arguments.get("query") or state["query"]),
+                    top_k=_optional_int(arguments.get("topK")),
+                ),
+                owner_user_id=owner_user_id,
+                accessible_knowledge_base_ids=accessible_ids,
+            )
+            return {
+                "results": [_sop_hit_payload(hit) for hit in result.results],
+                "citations": [_citation_payload(citation) for citation in result.citations],
+            }
+
+        registry.register_local_handler(
+            name="knowledge_retrieval",
+            description="Search the owner's knowledge bases for troubleshooting evidence.",
+            handler=retrieve,
+            input_schema={"type": "object"},
+        )
+        await registry.register_mcp(
+            await self._mcp_client_for(owner_user_id),
+            with_langchain_tools=False,
+        )
+        return registry
+
     def _build_graph(self) -> Any:
         graph = StateGraph(AiopsDiagnosticState)
         graph.add_node("planner", self._planner)
@@ -316,9 +348,8 @@ class AiopsDiagnosticService:
             )
 
         try:
-            mcp_client = await self._mcp_client_for(owner_user_id)
-            discovered_tools = await mcp_client.discover_tools()
-            available_tools = [definition.name for definition in discovered_tools]
+            registry = await self._tool_registry(state)
+            available_tools = registry.names()
         except McpClientError:
             available_tools = []
             events.append(
@@ -331,12 +362,21 @@ class AiopsDiagnosticService:
                 )
             )
 
+        search_tool_name = next(
+            (
+                name
+                for name in available_tools
+                if name == "SearchLog" or name.endswith("__SearchLog")
+            ),
+            "SearchLog",
+        )
         plan, plan_origin = await self._create_plan(
             query=query,
             alert=_json_dict(state.get("alert")),
             sop_hits=sop_hits,
             no_sop_matched=no_sop_matched,
             available_tools=available_tools,
+            search_tool_name=search_tool_name,
         )
         events.append(
             _task_status_event(
@@ -466,26 +506,9 @@ class AiopsDiagnosticService:
         )
 
         try:
-            if tool_name == "knowledge_retrieval":
-                result = await self._retrieval_tool.run(
-                    KnowledgeRetrievalToolInput(
-                        query=str(arguments.get("query") or state["query"]),
-                        top_k=_optional_int(arguments.get("topK")),
-                    ),
-                    owner_user_id=owner_user_id,
-                    accessible_knowledge_base_ids=cast(
-                        Sequence[str], state["accessible_knowledge_base_ids"]
-                    ),
-                )
-                output: object = {
-                    "results": [_sop_hit_payload(hit) for hit in result.results],
-                    "citations": [_citation_payload(citation) for citation in result.citations],
-                }
-            elif tool_name:
-                mcp_client = await self._mcp_client_for(owner_user_id)
-                output = await mcp_client.call_tool(tool_name, arguments)
-            else:
+            if not tool_name:
                 raise ValueError("Diagnostic plan did not specify a tool.")
+            output = await (await self._tool_registry(state)).execute(tool_name, arguments)
         except Exception as exc:
             safe_error = _safe_error(exc)
             evidence: JsonDict = {
@@ -838,8 +861,9 @@ class AiopsDiagnosticService:
         sop_hits: Sequence[JsonDict],
         no_sop_matched: bool,
         available_tools: Sequence[str],
+        search_tool_name: str = "SearchLog",
     ) -> tuple[list[JsonDict], str]:
-        generic_plan = [self._generic_search_log_step(query)]
+        generic_plan = [self._generic_search_log_step(query, search_tool_name)]
         prompt = (
             "Return JSON only with a `steps` array. Each step has `id`, `tool`, `arguments`, and "
             "`purpose`. Plan a bounded AIOps investigation using only these tools: "
@@ -855,18 +879,18 @@ class AiopsDiagnosticService:
         if not plan:
             return generic_plan, "generic"
         normalized_plan = [
-            self._normalized_search_log_step(step, query)
-            if step.get("tool") == "SearchLog"
+            self._normalized_search_log_step(step, query, search_tool_name)
+            if step.get("tool") == search_tool_name
             else step
             for step in plan
         ]
         return normalized_plan, "SOP-backed" if sop_hits else "generic"
 
-    def _generic_search_log_step(self, query: str) -> JsonDict:
+    def _generic_search_log_step(self, query: str, tool_name: str = "SearchLog") -> JsonDict:
         now_ms = int(_now().timestamp() * 1000)
         return {
             "id": "search-cls-logs",
-            "tool": "SearchLog",
+            "tool": tool_name,
             "arguments": {
                 "Region": self._cls_region,
                 "TopicId": self._cls_topic_id,
@@ -878,9 +902,11 @@ class AiopsDiagnosticService:
             "purpose": f"Gather real CLS evidence relevant to: {query}",
         }
 
-    def _normalized_search_log_step(self, step: JsonDict, query: str) -> JsonDict:
+    def _normalized_search_log_step(
+        self, step: JsonDict, query: str, tool_name: str = "SearchLog"
+    ) -> JsonDict:
         """Keep model planning bounded to an executable real CLS search step."""
-        generic_step = self._generic_search_log_step(query)
+        generic_step = self._generic_search_log_step(query, tool_name)
         model_arguments = _json_dict(step.get("arguments"))
         limit_value = model_arguments.get("Limit")
         arguments = _json_dict(generic_step["arguments"])
@@ -888,7 +914,7 @@ class AiopsDiagnosticService:
             arguments["Limit"] = limit_value
         return {
             "id": str(step.get("id") or generic_step["id"]),
-            "tool": "SearchLog",
+            "tool": tool_name,
             "arguments": arguments,
             "purpose": str(step.get("purpose") or generic_step["purpose"]),
         }

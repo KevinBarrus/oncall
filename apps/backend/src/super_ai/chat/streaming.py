@@ -45,6 +45,7 @@ from super_ai.retrieval import (
     create_langchain_knowledge_retrieval_tool,
     create_read_document_tool,
 )
+from super_ai.tool_registry import ToolRegistry
 
 ToolCallStatus = Literal["started", "delta", "completed", "failed"]
 logger = logging.getLogger(__name__)
@@ -521,11 +522,13 @@ class LangChainChatAgentRunner:
             owner_user_id=request.owner_user_id,
             accessible_knowledge_base_ids=request.accessible_knowledge_base_ids,
         )
-        tools: list[StructuredTool] = [langchain_tool, create_current_time_tool()]
+        registry = ToolRegistry()
+        registry.register_local_tool(langchain_tool)
+        registry.register_local_tool(create_current_time_tool())
 
         # add read_document when document repository is available
         if self._document_repository is not None and request.accessible_knowledge_base_ids:
-            tools.append(
+            registry.register_local_tool(
                 create_read_document_tool(
                     owner_user_id=request.owner_user_id,
                     accessible_knowledge_base_ids=request.accessible_knowledge_base_ids,
@@ -534,19 +537,18 @@ class LangChainChatAgentRunner:
             )
 
         if request.skills:
-            tools.append(create_load_skill_tool(request.skills))
+            registry.register_local_tool(create_load_skill_tool(request.skills))
         mcp_client = self._mcp_client
         if self._mcp_client_provider is not None:
             mcp_client = await self._mcp_client_provider.client_for_user(
                 owner_user_id=request.owner_user_id
             )
         if mcp_client is not None:
-            await mcp_client.discover_tools()
-            tools.extend(await mcp_client.get_langchain_tools())
+            await registry.register_mcp(mcp_client)
 
         # wrap tools with output compression to avoid context window blow-up
         llm = self._llm_provider
-        tools = [_wrap_tool_output_compression(t, llm) for t in tools]
+        tools = [_wrap_tool_output_compression(t, llm) for t in registry.langchain_tools()]
 
         agent = _create_langchain_agent(
             model=cast(Any, self._llm_provider.create_chat_model()),
