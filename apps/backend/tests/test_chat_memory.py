@@ -12,6 +12,8 @@ from alembic.config import Config
 from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
+    ChatRuntimeContextBudget,
+    ChatRuntimeContextLimitReached,
     _select_messages_for_compaction,
     maybe_compress_tool_output,
 )
@@ -77,6 +79,18 @@ def test_memory_compaction_selects_bounded_old_prefix() -> None:
     assert [message.id for message in selected] == [
         message.id for message in messages[: len(selected)]
     ]
+
+
+def test_runtime_context_budget_reserves_output_and_rejects_overflow() -> None:
+    budget = ChatRuntimeContextBudget.create(
+        system_prompt="你是助手。",
+        memory_summary=None,
+        messages=[],
+        context_window_tokens=1_000,
+    )
+
+    with pytest.raises(ChatRuntimeContextLimitReached):
+        budget.add("工具输出 " * 5_000, role="tool")
 
 
 @pytest.mark.asyncio

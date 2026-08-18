@@ -13,3 +13,18 @@
 - 工具调用前后都能得到剩余上下文预算。
 - 超预算时不会继续发起不可执行的模型请求。
 - 预算估算覆盖工具消息和输出预留。
+
+## 实施记录
+
+- 新增 `ChatRuntimeContextBudget`，初始统计 system prompt、记忆摘要和历史消息。
+- 运行时输入安全线按上下文窗口的 90% 计算，并固定预留 2048 个输出 token。
+- LangChain 事件流中继续累计工具参数、工具结果、错误结果和模型流式输出。
+- 超过预算时抛出运行时上下文超限异常，由聊天 SSE 返回 `CHAT_CONTEXT_LIMIT_REACHED`，不再继续消耗模型调用。
+- 预算仍使用 LangChain 的近似 token 统计函数；真实模型 tokenizer 接入留作后续增强。
+
+## 验证记录
+
+- `uv run pyright src/super_ai/chat/memory.py src/super_ai/chat/streaming.py`：通过。
+- `uv run ruff check src/super_ai/chat/memory.py src/super_ai/chat/streaming.py tests/test_chat_memory.py`：通过。
+- `uv run pytest -q tests/test_chat_memory.py -k 'runtime_context_budget or compaction_selects_bounded or tool_compression'`：4 passed。
+- `git diff --check`：通过。

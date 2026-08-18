@@ -25,6 +25,8 @@ from super_ai.chat.configuration import (
 from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
+    ChatRuntimeContextBudget,
+    ChatRuntimeContextLimitReached,
     maybe_compress_tool_output,
     memory_payload,
 )
@@ -123,6 +125,7 @@ class ChatAgentRequest:
     accessible_knowledge_base_ids: tuple[str, ...]
     system_prompt: str
     skills: tuple[SelectedChatSkill, ...] = ()
+    context_window_tokens: int = 131072
 
 
 class LoadSkillInput(BaseModel):
@@ -220,6 +223,11 @@ class ChatStreamingService:
             accessible_knowledge_base_ids=tuple(accessible_knowledge_base_ids),
             system_prompt=system_prompt,
             skills=selected_skills,
+            context_window_tokens=(
+                self._memory_service.context_window_tokens
+                if self._memory_service is not None
+                else 131072
+            ),
         )
         answer_parts: list[str] = []
         tool_call_ids: list[str] = []
@@ -323,6 +331,15 @@ class ChatStreamingService:
                 toolCallCount=len(tool_call_ids),
                 durationMs=elapsed_ms(started_at),
             )
+        except ChatRuntimeContextLimitReached:
+            emit_event(
+                logger,
+                "agent.chat.context_limit_reached",
+                sessionId=session.id,
+                durationMs=elapsed_ms(started_at),
+            )
+            yield _error_event("CHAT_CONTEXT_LIMIT_REACHED")
+            return
         except Exception as exc:
             emit_event(
                 logger,
@@ -560,11 +577,28 @@ class LangChainChatAgentRunner:
             for message in request.messages
             if message.role in {"user", "assistant"}
         ]
+        budget = ChatRuntimeContextBudget.create(
+            system_prompt=request.system_prompt,
+            memory_summary=None,
+            messages=list(request.messages),
+            context_window_tokens=request.context_window_tokens,
+        )
 
         async for raw_event in agent.astream_events(
             cast(Any, {"messages": messages}),
             version="v2",
         ):
+            event_name = raw_event.get("event")
+            data = cast(Mapping[str, object], raw_event.get("data") or {})
+            if event_name == "on_tool_start":
+                budget.add(data.get("input"), role="tool_call")
+            elif event_name in {"on_tool_end", "on_tool_error"}:
+                budget.add(
+                    data.get("output") if event_name == "on_tool_end" else data.get("error"),
+                    role="tool",
+                )
+            elif event_name == "on_chat_model_stream":
+                budget.add(data.get("chunk"), role="assistant")
             parsed = _agent_event_from_langchain_event(cast(Mapping[str, object], raw_event))
             if parsed is None:
                 continue
@@ -605,7 +639,7 @@ def _wrap_tool_output_compression(
                 return await maybe_compress_tool_output(
                     text, tool_name=tool.name, llm_provider=llm_provider
                 )
-        return result
+        return cast(object, result)
 
     return StructuredTool.from_function(
         coroutine=_compressed_coroutine,

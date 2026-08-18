@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -28,10 +29,58 @@ HARD_CONTEXT_THRESHOLD_PERCENT = 95.0
 MEMORY_COMPACTION_INPUT_RATIO = 0.25
 MEMORY_COMPACTION_MIN_TOKENS = 128
 MEMORY_COMPACTION_MESSAGE_CAP_CHARS = 4_000
+RUNTIME_OUTPUT_RESERVE_TOKENS = 2_048
+RUNTIME_SAFETY_MARGIN_PERCENT = 90.0
 
 
 class ChatContextLimitReached(RuntimeError):
     """Raised before persistence when a candidate message exceeds the hard budget."""
+
+
+class ChatRuntimeContextLimitReached(RuntimeError):
+    """Raised when an Agent run exhausts its input/tool/output budget."""
+
+
+@dataclass(slots=True)
+class ChatRuntimeContextBudget:
+    """Track the approximate budget consumed by one LangChain Agent run."""
+
+    context_window_tokens: int
+    used_tokens: int
+    input_limit_tokens: int
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        system_prompt: str,
+        memory_summary: str | None,
+        messages: list[ChatMessageRecord],
+        context_window_tokens: int,
+    ) -> ChatRuntimeContextBudget:
+        input_limit = int(
+            context_window_tokens * RUNTIME_SAFETY_MARGIN_PERCENT / 100
+        ) - RUNTIME_OUTPUT_RESERVE_TOKENS
+        return cls(
+            context_window_tokens=context_window_tokens,
+            used_tokens=estimate_context_tokens(
+                system_prompt=system_prompt,
+                memory_summary=memory_summary,
+                messages=messages,
+            ),
+            input_limit_tokens=max(1, input_limit),
+        )
+
+    def add(self, value: object, *, role: str) -> None:
+        message: dict[str, object] = {"role": role, "content": _runtime_text(value)}
+        if role == "tool":
+            message["tool_call_id"] = "runtime-budget"
+        value_tokens = int(
+            count_tokens_approximately([message])
+        )
+        if self.used_tokens + value_tokens > self.input_limit_tokens:
+            raise ChatRuntimeContextLimitReached
+        self.used_tokens += value_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +483,15 @@ def _bounded_text(text: str, limit: int) -> str:
     head = max(1, limit // 2)
     tail = max(1, limit - head)
     return f"{text[:head]}\n[... 中间内容已省略 ...]\n{text[-tail:]}"
+
+
+def _runtime_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _memory_instruction(summary: str) -> str:
