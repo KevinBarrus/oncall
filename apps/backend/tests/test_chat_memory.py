@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +16,9 @@ from super_ai.chat.memory import (
     ChatMemoryService,
     ChatRuntimeContextBudget,
     ChatRuntimeContextLimitReached,
+    _memory_instruction,
     _select_messages_for_compaction,
+    _validated_memory_document,
     maybe_compress_tool_output,
 )
 from super_ai.llm import LlmProvider
@@ -34,7 +38,24 @@ class FakeChatModel:
 
     async def ainvoke(self, input: object) -> object:
         self.inputs.append(input)
-        return FakeMessage("用户正在排查 API；已确认需要保留工具结果和后续任务。")
+        match = re.search(r"\[message_id=([^\]]+)\]", str(input))
+        source_id = match.group(1) if match else "unknown"
+        return FakeMessage(
+            json.dumps(
+                {
+                    "version": 1,
+                    "summary": "用户正在排查 API，需保留工具结果和后续任务。",
+                    "items": [
+                        {
+                            "category": "goal",
+                            "content": "继续排查 API",
+                            "sourceMessageIds": [source_id],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 class FakeProvider:
@@ -79,6 +100,26 @@ def test_memory_compaction_selects_bounded_old_prefix() -> None:
     assert [message.id for message in selected] == [
         message.id for message in messages[: len(selected)]
     ]
+
+
+def test_structured_memory_requires_known_source_ids() -> None:
+    payload = json.dumps(
+        {
+            "version": 1,
+            "summary": "已确认 API 需要继续排查。",
+            "items": [
+                {
+                    "category": "fact",
+                    "content": "API 返回超时",
+                    "sourceMessageIds": ["message-1"],
+                }
+            ],
+        }
+    )
+
+    assert _validated_memory_document(payload, allowed_source_ids={"message-1"}) is not None
+    assert _validated_memory_document(payload, allowed_source_ids={"message-2"}) is None
+    assert "message-1" in _memory_instruction(payload)
 
 
 def test_runtime_context_budget_reserves_output_and_rejects_overflow() -> None:

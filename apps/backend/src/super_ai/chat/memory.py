@@ -15,6 +15,7 @@ from super_ai.llm import LlmProvider
 from super_ai.memory.repositories import (
     ChatMessageRecord,
     ChatSessionRecord,
+    JsonDict,
     MemoryRepositories,
 )
 
@@ -31,6 +32,10 @@ MEMORY_COMPACTION_MIN_TOKENS = 128
 MEMORY_COMPACTION_MESSAGE_CAP_CHARS = 4_000
 RUNTIME_OUTPUT_RESERVE_TOKENS = 2_048
 RUNTIME_SAFETY_MARGIN_PERCENT = 90.0
+MEMORY_SCHEMA_VERSION = 1
+MEMORY_CATEGORIES = frozenset(
+    {"goal", "fact", "decision", "todo", "source", "recent_context"}
+)
 
 
 class ChatContextLimitReached(RuntimeError):
@@ -259,18 +264,32 @@ class ChatMemoryService:
         messages: list[ChatMessageRecord],
         system_prompt: str,
     ) -> ChatSessionRecord:
-        transcript = "\n".join(f"{message.role}: {message.content}" for message in messages)
+        transcript = "\n".join(
+            f"[message_id={message.id}] {message.role}: {message.content}"
+            for message in messages
+        )
+        existing_memory = _memory_document(session.memory_summary)
         prompt = (
-            "请将以下对话压缩为可供后续模型继续对话的中文记忆摘要。保留用户目标、"
-            "明确事实、偏好、决策、未完成事项、工具结果和引用来源；删除寒暄与重复内容。"
-            "只输出摘要正文，不超过 1200 个汉字。\n\n"
-            f"已有摘要：\n{_bounded_text(session.memory_summary or '无', 4_800)}\n\n"
+            "请将以下对话压缩为结构化中文记忆。只输出合法 JSON，不要输出 Markdown。"
+            'JSON 格式必须是：{"version":1,"summary":"...","items":['
+            '{"category":"goal|fact|decision|todo|source|recent_context",'
+            '"content":"...","sourceMessageIds":["消息 ID"]}]}。'
+            "summary 不超过 1200 个汉字；每个 item 必须保留来源消息 ID；删除寒暄与重复内容。\n\n"
+            f"已有记忆：\n{json.dumps(existing_memory, ensure_ascii=False)}\n\n"
             f"新增对话：\n{transcript}"
         )
         response = await self._llm_provider.create_chat_model().ainvoke(prompt)
-        summary = _extract_model_text(response).strip()
-        if not summary:
-            raise RuntimeError("The model returned an empty memory summary.")
+        summary_text = _extract_model_text(response).strip()
+        memory = _validated_memory_document(
+            summary_text,
+            allowed_source_ids={
+                *{message.id for message in messages},
+                *_memory_source_ids(existing_memory),
+            },
+        )
+        if memory is None:
+            raise RuntimeError("The model returned an invalid structured memory.")
+        summary = json.dumps(memory, ensure_ascii=False, separators=(",", ":"))
         compacted_count = session.compacted_message_count + len(messages)
         tokens = estimate_context_tokens(
             system_prompt=system_prompt,
@@ -443,6 +462,84 @@ def _usage_percent(tokens: int, window: int) -> float:
     return round(min(100.0, tokens / window * 100), 1)
 
 
+def _memory_document(summary: str | None) -> JsonDict:
+    if not summary:
+        return {"version": MEMORY_SCHEMA_VERSION, "summary": "无", "items": []}
+    try:
+        parsed = json.loads(summary)
+    except json.JSONDecodeError:
+        return {"version": 0, "summary": summary, "items": []}
+    return (
+        cast(dict[str, object], parsed)
+        if isinstance(parsed, dict)
+        else {"version": 0, "summary": summary, "items": []}
+    )
+
+
+def _memory_source_ids(memory: JsonDict) -> set[str]:
+    items = memory.get("items")
+    if not isinstance(items, list):
+        return set()
+    source_ids: set[str] = set()
+    for raw_item in cast(list[object], items):
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = cast(Mapping[str, object], raw_item)
+        values = item.get("sourceMessageIds")
+        if isinstance(values, list):
+            source_ids.update(str(value) for value in cast(list[object], values) if value)
+    return source_ids
+
+
+def _validated_memory_document(text: str, *, allowed_source_ids: set[str]) -> JsonDict | None:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    memory = cast(Mapping[str, object], parsed)
+    if memory.get("version") != MEMORY_SCHEMA_VERSION:
+        return None
+    summary = memory.get("summary")
+    items = memory.get("items")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 1_200:
+        return None
+    if not isinstance(items, list):
+        return None
+    normalized_items: list[JsonDict] = []
+    for raw_item in cast(list[object], items):
+        if not isinstance(raw_item, Mapping):
+            return None
+        item = cast(Mapping[str, object], raw_item)
+        category = item.get("category")
+        content = item.get("content")
+        source_ids = item.get("sourceMessageIds")
+        if (
+            not isinstance(category, str)
+            or category not in MEMORY_CATEGORIES
+            or not isinstance(content, str)
+            or not content.strip()
+            or not isinstance(source_ids, list)
+            or not source_ids
+            or not all(
+                str(source_id) in allowed_source_ids
+                for source_id in cast(list[object], source_ids)
+            )
+        ):
+            return None
+        normalized_items.append(
+            {
+                "category": category,
+                "content": content.strip(),
+                "sourceMessageIds": [
+                    str(source_id) for source_id in cast(list[object], source_ids)
+                ],
+            }
+        )
+    return {"version": MEMORY_SCHEMA_VERSION, "summary": summary.strip(), "items": normalized_items}
+
+
 def _select_messages_for_compaction(
     *,
     messages: list[ChatMessageRecord],
@@ -495,7 +592,12 @@ def _runtime_text(value: object) -> str:
 
 
 def _memory_instruction(summary: str) -> str:
-    return f"以下是此前对话的压缩记忆，请作为真实会话上下文继续回答：\n{summary}"
+    memory = _memory_document(summary)
+    lines = [f"摘要：{memory['summary']}"]
+    for item in cast(list[JsonDict], memory["items"]):
+        sources = ",".join(str(source) for source in cast(list[object], item["sourceMessageIds"]))
+        lines.append(f"- [{item['category']}] {item['content']}（来源：{sources or '未标注'}）")
+    return "以下是此前对话的压缩记忆，请作为真实会话上下文继续回答：\n" + "\n".join(lines)
 
 
 def _prompt_with_memory(system_prompt: str, summary: str | None) -> str:

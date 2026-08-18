@@ -14,3 +14,19 @@
 - 新旧决策关系可查询。
 - 摘要失败或校验失败不会破坏已有记忆。
 - 原始历史仍可完整恢复。
+
+## 实施记录
+
+- 将记忆摘要格式升级为版本化 JSON：`version`、`summary` 和 `items`。
+- `items` 按目标、事实、决策、待办、来源和最近上下文分类，并要求保存 `sourceMessageIds`。
+- 摘要 prompt 为每条新增消息注入消息 ID，模型只能引用当前批次或已有记忆中的来源 ID。
+- 记忆进入模型上下文时渲染为可读文本，同时保留结构化来源信息。
+- JSON 解析失败、版本错误、分类错误、来源 ID 不存在或摘要过长时，拒绝覆盖旧摘要。
+- 保留旧版自由文本摘要的读取兼容性；旧摘要作为无结构来源的 legacy 摘要使用。
+
+## 验证记录
+
+- `uv run ruff check src/super_ai/chat/memory.py tests/test_chat_memory.py`：通过。
+- `uv run pyright src/super_ai/chat/memory.py src/super_ai/chat/streaming.py`：通过。
+- `uv run pytest -q tests/test_chat_memory.py -k 'structured_memory or compaction_selects_bounded or runtime_context_budget or tool_compression'`：5 passed。
+- `git diff --check`：通过。
