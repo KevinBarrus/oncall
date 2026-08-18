@@ -13,7 +13,11 @@ from alembic import command
 from alembic.config import Config
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
-from super_ai.aiops.diagnostics import _representative_log_records, _validated_plan
+from super_ai.aiops.diagnostics import (
+    _representative_log_records,
+    _tool_result_summary,
+    _validated_plan,
+)
 from super_ai.api.app import AiopsDiagnosticRunner, create_app
 from super_ai.llm import LlmProvider, RerankResult
 from super_ai.mcp_client import LocalMcpClient, McpClientError, McpToolDefinition
@@ -646,10 +650,29 @@ def test_representative_log_records_keeps_tail_and_severe_entries() -> None:
 
     selected = _representative_log_records(records)
 
-    assert len(selected) == 10
+    assert len(selected) == 2
     assert selected[0]["message"] == "info-0"
-    assert selected[-1]["message"] == "info-11"
-    assert any(item["message"] == "fatal-in-middle" for item in selected)
+    assert selected[0]["occurrenceCount"] == 11
+    assert selected[1]["message"] == "fatal-in-middle"
+
+
+def test_representative_log_records_clusters_repeated_messages() -> None:
+    records = [
+        {"message": f"timeout after {index}ms", "level": "WARN", "service": "api"}
+        for index in range(20)
+    ]
+
+    selected = _representative_log_records(records)
+
+    assert len(selected) == 1
+    assert selected[0]["occurrenceCount"] == 20
+
+
+def test_search_log_summary_keeps_unparseable_preview() -> None:
+    summary = _tool_result_summary("SearchLog", [{"text": "FATAL database corrupted"}])
+
+    assert "未返回可解析日志" in summary
+    assert "FATAL database corrupted" in summary
 
 
 async def _register(client: httpx.AsyncClient, email: str) -> dict[str, Any]:

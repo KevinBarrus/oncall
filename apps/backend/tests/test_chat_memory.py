@@ -8,7 +8,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-from super_ai.chat.memory import ChatContextLimitReached, ChatMemoryService
+from super_ai.chat.memory import (
+    ChatContextLimitReached,
+    ChatMemoryService,
+    maybe_compress_tool_output,
+)
 from super_ai.llm import LlmProvider
 from super_ai.memory.database import create_memory_engine, create_memory_session_factory
 from super_ai.memory.sqlite import create_sqlite_memory_repositories
@@ -34,6 +38,48 @@ class FakeProvider:
 
     def create_chat_model(self) -> FakeChatModel:
         return self.model
+
+
+class FailingProvider:
+    class Model:
+        async def ainvoke(self, input: object) -> object:
+            raise RuntimeError("summary unavailable")
+
+    def create_chat_model(self) -> Model:
+        return self.Model()
+
+
+@pytest.mark.asyncio
+async def test_tool_compression_scans_tail_and_signal_regions() -> None:
+    provider = FakeProvider()
+    text = "\n".join([f"INFO request={index}" for index in range(2_000)])
+    text += "\nFATAL database corrupted request_id=abc123"
+
+    compressed = await maybe_compress_tool_output(
+        text,
+        tool_name="SearchLog",
+        llm_provider=cast(LlmProvider, provider),
+    )
+
+    assert compressed.startswith("[compressed]")
+    prompt = str(provider.model.inputs[0])
+    assert "FATAL database corrupted" in prompt
+    assert "[1] INFO request=0" in prompt
+
+
+@pytest.mark.asyncio
+async def test_tool_compression_fallback_keeps_selected_regions() -> None:
+    text = "\n".join([f"INFO request={index}" for index in range(2_000)])
+    text += "\nFATAL database corrupted request_id=abc123"
+
+    compressed = await maybe_compress_tool_output(
+        text,
+        tool_name="SearchLog",
+        llm_provider=cast(LlmProvider, FailingProvider()),
+    )
+
+    assert len(compressed) <= 4_100
+    assert "FATAL database corrupted" in compressed
 
 
 @pytest.fixture

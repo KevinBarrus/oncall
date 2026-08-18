@@ -1423,7 +1423,12 @@ def _tool_result_summary(tool_name: str, output: object) -> str:
     records = _search_log_records(output)
     if not records:
         return json.dumps(
-            {"recordCount": 0, "records": [], "message": "CLS 未返回可解析日志。"},
+            {
+                "recordCount": 0,
+                "records": [],
+                "message": "CLS 未返回可解析日志。",
+                "rawPreview": _bounded_json(output, limit=2_000),
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -1435,26 +1440,56 @@ def _tool_result_summary(tool_name: str, output: object) -> str:
 
 
 def _representative_log_records(records: Sequence[JsonDict], limit: int = 10) -> list[JsonDict]:
-    """保留长日志的首尾和高严重度记录，避免只截取开头而漏掉关键错误。"""
-    if len(records) <= limit:
-        return list(records)
+    """按错误类型聚类后保留首尾、严重度和时间线代表记录。"""
+    grouped: dict[str, list[JsonDict]] = {}
+    for record in records:
+        key = _log_cluster_key(record)
+        grouped.setdefault(key, []).append(record)
+
+    representatives: list[JsonDict] = []
+    for group in grouped.values():
+        representative = dict(group[0])
+        if len(group) > 1:
+            representative["occurrenceCount"] = len(group)
+            timestamps = [str(item.get("timestamp")) for item in group if item.get("timestamp")]
+            if timestamps:
+                representative["firstSeen"] = timestamps[0]
+                representative["lastSeen"] = timestamps[-1]
+        representatives.append(representative)
+
+    if len(representatives) <= limit:
+        return representatives
 
     priority = [
         index
-        for index, record in enumerate(records)
+        for index, record in enumerate(representatives)
         if str(record.get("level") or "").upper() in {"ERROR", "FATAL", "CRITICAL"}
         or record.get("exception")
     ]
     selected = {
         *priority[:4],
-        *range(min(3, len(records))),
-        *range(max(0, len(records) - 3), len(records)),
+        *range(min(3, len(representatives))),
+        *range(max(0, len(representatives) - 3), len(representatives)),
     }
-    for index in range(len(records)):
+    for index in range(len(representatives)):
         if len(selected) >= limit:
             break
         selected.add(index)
-    return [records[index] for index in sorted(selected)[:limit]]
+    return [representatives[index] for index in sorted(selected)[:limit]]
+
+
+def _log_cluster_key(record: Mapping[str, object]) -> str:
+    message = str(record.get("message") or record.get("exception") or "")
+    normalized = re.sub(r"\d+(?:\.\d+)?", "#", message.lower())
+    normalized = re.sub(r"[0-9a-f]{8,}", "#", normalized)
+    return "|".join(
+        (
+            str(record.get("level") or "").upper(),
+            str(record.get("service") or ""),
+            str(record.get("event") or ""),
+            normalized,
+        )
+    )
 
 
 def _search_log_records(output: object) -> list[JsonDict]:

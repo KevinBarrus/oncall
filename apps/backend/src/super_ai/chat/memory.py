@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -226,7 +227,12 @@ class ChatMemoryService:
 # ---------------------------------------------------------------------------
 
 TOOL_OUTPUT_COMPRESS_THRESHOLD_TOKENS = 2000
-TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS = 8000
+TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS = 12_000
+TOOL_OUTPUT_SIGNAL_PATTERN = re.compile(
+    r"\b(error|fatal|critical|exception|traceback|deadlock|oom|killed|timeout|"
+    r"corrupt(?:ed|ion)?|retry|degraded|fallback|rejected|exhausted|overflow)\b",
+    flags=re.IGNORECASE,
+)
 
 
 async def maybe_compress_tool_output(
@@ -246,7 +252,9 @@ async def maybe_compress_tool_output(
     if approx_tokens <= threshold_tokens:
         return text
 
-    capped = text[:TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS]
+    capped = _select_text_for_compression(
+        text, max_chars=TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS
+    )
     prompt = (
         "你是一个工具输出压缩器。请将以下工具输出压缩为简洁摘要，保留所有关键事实、"
         "数字、名称、状态、错误信息和可操作信息。删除冗余描述和格式化噪音。"
@@ -262,8 +270,53 @@ async def maybe_compress_tool_output(
     except Exception:
         pass
 
-    # Fallback: simple truncation
-    return f"{text[:4000]}\n\n[... 输出过长已截断，原文约 {approx_tokens} tokens]"
+    return (
+        f"{capped[:4000]}\n\n"
+        f"[... 输出已按信号、首尾和时间线采样，原文约 {approx_tokens} tokens]"
+    )
+
+
+def _select_text_for_compression(text: str, *, max_chars: int) -> str:
+    """Select high-value regions from the whole text before LLM compression."""
+    lines = text.splitlines()
+    if not lines:
+        return text[:max_chars]
+
+    signal_indexes = {
+        index
+        for index, line in enumerate(lines)
+        if TOOL_OUTPUT_SIGNAL_PATTERN.search(line)
+    }
+    selected: list[int] = []
+
+    def add(index: int) -> None:
+        if 0 <= index < len(lines) and index not in selected:
+            selected.append(index)
+
+    # Keep signal windows first so a later length limit cannot hide them.
+    for index in sorted(signal_indexes):
+        for candidate in range(index - 2, index + 3):
+            add(candidate)
+    for index in range(min(10, len(lines))):
+        add(index)
+    for index in range(max(0, len(lines) - 20), len(lines)):
+        add(index)
+
+    stride = max(1, len(lines) // 40)
+    for index in range(0, len(lines), stride):
+        add(index)
+
+    selected.sort()
+    output: list[str] = []
+    size = 0
+    for index in selected:
+        line = f"[{index + 1}] {lines[index]}"
+        separator = "\n" if output else ""
+        if size + len(separator) + len(line) > max_chars:
+            continue
+        output.append(line)
+        size += len(separator) + len(line)
+    return "\n".join(output)
 
 
 # ---------------------------------------------------------------------------
