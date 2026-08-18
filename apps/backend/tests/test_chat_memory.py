@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -11,10 +12,12 @@ from alembic.config import Config
 from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
+    _select_messages_for_compaction,
     maybe_compress_tool_output,
 )
 from super_ai.llm import LlmProvider
 from super_ai.memory.database import create_memory_engine, create_memory_session_factory
+from super_ai.memory.repositories import ChatMessageRecord
 from super_ai.memory.sqlite import create_sqlite_memory_repositories
 
 
@@ -47,6 +50,33 @@ class FailingProvider:
 
     def create_chat_model(self) -> Model:
         return self.Model()
+
+
+def test_memory_compaction_selects_bounded_old_prefix() -> None:
+    messages = [
+        ChatMessageRecord(
+            id=f"message-{index}",
+            owner_user_id="user-a",
+            session_id="session-a",
+            role="user",
+            content=f"历史消息 {index} " * 40,
+            metadata={},
+            created_at=datetime.now(timezone.utc),
+        )
+        for index in range(20)
+    ]
+
+    selected = _select_messages_for_compaction(
+        messages=messages,
+        system_prompt="你是助手。",
+        memory_summary=None,
+        context_window_tokens=4_000,
+    )
+
+    assert 0 < len(selected) < len(messages)
+    assert [message.id for message in selected] == [
+        message.id for message in messages[: len(selected)]
+    ]
 
 
 @pytest.mark.asyncio

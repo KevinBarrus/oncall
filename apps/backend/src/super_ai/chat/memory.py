@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
@@ -25,6 +25,9 @@ SUPPORTED_CHAT_MEMORY_MODES: tuple[ChatMemoryMode, ...] = (
 )
 AUTO_CONTEXT_THRESHOLD_PERCENT = 70.0
 HARD_CONTEXT_THRESHOLD_PERCENT = 95.0
+MEMORY_COMPACTION_INPUT_RATIO = 0.25
+MEMORY_COMPACTION_MIN_TOKENS = 128
+MEMORY_COMPACTION_MESSAGE_CAP_CHARS = 4_000
 
 
 class ChatContextLimitReached(RuntimeError):
@@ -81,13 +84,19 @@ class ChatMemoryService:
             >= AUTO_CONTEXT_THRESHOLD_PERCENT
         )
         if should_compact and uncompressed:
+            compactable = _select_messages_for_compaction(
+                messages=uncompressed,
+                system_prompt=system_prompt,
+                memory_summary=current.memory_summary,
+                context_window_tokens=self.context_window_tokens,
+            )
             current = await self._compact_messages(
                 owner_user_id=owner_user_id,
                 session=current,
-                messages=uncompressed,
+                messages=compactable,
                 system_prompt=system_prompt,
             )
-            candidate_messages = [candidate]
+            candidate_messages = [*uncompressed[len(compactable) :], candidate]
             candidate_tokens = estimate_context_tokens(
                 system_prompt=system_prompt,
                 memory_summary=current.memory_summary,
@@ -176,12 +185,22 @@ class ChatMemoryService:
                 history=history,
                 system_prompt=system_prompt,
             )
-        return await self._compact_messages(
-            owner_user_id=owner_user_id,
-            session=session,
-            messages=uncompressed,
-            system_prompt=system_prompt,
-        )
+        current = session
+        while uncompressed:
+            compactable = _select_messages_for_compaction(
+                messages=uncompressed,
+                system_prompt=system_prompt,
+                memory_summary=current.memory_summary,
+                context_window_tokens=self.context_window_tokens,
+            )
+            current = await self._compact_messages(
+                owner_user_id=owner_user_id,
+                session=current,
+                messages=compactable,
+                system_prompt=system_prompt,
+            )
+            uncompressed = uncompressed[len(compactable) :]
+        return current
 
     async def _compact_messages(
         self,
@@ -191,14 +210,12 @@ class ChatMemoryService:
         messages: list[ChatMessageRecord],
         system_prompt: str,
     ) -> ChatSessionRecord:
-        transcript = "\n".join(
-            f"{message.role}: {message.content}" for message in messages
-        )
+        transcript = "\n".join(f"{message.role}: {message.content}" for message in messages)
         prompt = (
             "请将以下对话压缩为可供后续模型继续对话的中文记忆摘要。保留用户目标、"
             "明确事实、偏好、决策、未完成事项、工具结果和引用来源；删除寒暄与重复内容。"
             "只输出摘要正文，不超过 1200 个汉字。\n\n"
-            f"已有摘要：\n{session.memory_summary or '无'}\n\n"
+            f"已有摘要：\n{_bounded_text(session.memory_summary or '无', 4_800)}\n\n"
             f"新增对话：\n{transcript}"
         )
         response = await self._llm_provider.create_chat_model().ainvoke(prompt)
@@ -375,6 +392,48 @@ def _candidate_user_message(
 
 def _usage_percent(tokens: int, window: int) -> float:
     return round(min(100.0, tokens / window * 100), 1)
+
+
+def _select_messages_for_compaction(
+    *,
+    messages: list[ChatMessageRecord],
+    system_prompt: str,
+    memory_summary: str | None,
+    context_window_tokens: int,
+) -> list[ChatMessageRecord]:
+    """Select an old prefix that fits a separate summary-input budget."""
+    budget = max(
+        MEMORY_COMPACTION_MIN_TOKENS,
+        int(context_window_tokens * MEMORY_COMPACTION_INPUT_RATIO),
+    )
+    selected: list[ChatMessageRecord] = []
+    for message in messages:
+        candidate = [*selected, message]
+        if estimate_context_tokens(
+            system_prompt=system_prompt,
+            memory_summary=memory_summary,
+            messages=candidate,
+        ) <= budget:
+            selected.append(message)
+            continue
+        if selected:
+            break
+        selected.append(
+            replace(
+                message,
+                content=_bounded_text(message.content, MEMORY_COMPACTION_MESSAGE_CAP_CHARS),
+            )
+        )
+        break
+    return selected or messages[:1]
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = max(1, limit // 2)
+    tail = max(1, limit - head)
+    return f"{text[:head]}\n[... 中间内容已省略 ...]\n{text[-tail:]}"
 
 
 def _memory_instruction(summary: str) -> str:
