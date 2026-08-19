@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -237,6 +238,66 @@ async def test_streaming_chat_emits_sse_events_and_persists_messages(
     ]
     assert all(event["requestId"] == "chat-observe" for event in agent_events)
     assert "How do I restart the API?" not in "\n".join(record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_same_session_chat_requests_are_serialized() -> None:
+    state = {
+        "started": asyncio.Event(),
+        "release": asyncio.Event(),
+        "active": 0,
+        "max_active": 0,
+    }
+
+    class LockProbeService(ChatStreamingService):
+        async def _stream_message_unlocked(
+            self, **_kwargs: object
+        ) -> AsyncIterator[dict[str, object]]:
+            state["active"] = cast(int, state["active"]) + 1
+            state["max_active"] = max(
+                cast(int, state["max_active"]), cast(int, state["active"])
+            )
+            cast(asyncio.Event, state["started"]).set()
+            await cast(asyncio.Event, state["release"]).wait()
+            state["active"] = cast(int, state["active"]) - 1
+            yield {"type": "complete"}
+
+    session = ChatSessionRecord(
+        id="session-serialized",
+        owner_user_id="user-serialized",
+        title="New chat",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    services = [
+        LockProbeService(
+            repositories=cast(Any, object()),
+            agent_runner=cast(Any, object()),
+        )
+        for _ in range(2)
+    ]
+
+    async def consume(service: ChatStreamingService) -> list[dict[str, object]]:
+        return [
+            event
+            async for event in service.stream_message(
+                owner_user_id=session.owner_user_id,
+                session=session,
+                content="检查并发",
+                accessible_knowledge_base_ids=(),
+            )
+        ]
+
+    first = asyncio.create_task(consume(services[0]))
+    await cast(asyncio.Event, state["started"]).wait()
+    second = asyncio.create_task(consume(services[1]))
+    await asyncio.sleep(0)
+    assert state["max_active"] == 1
+    assert not second.done()
+
+    cast(asyncio.Event, state["release"]).set()
+    await asyncio.gather(first, second)
+    assert state["max_active"] == 1
 
 
 @pytest.mark.asyncio

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,6 +55,7 @@ from super_ai.tool_registry import ToolRegistry
 
 ToolCallStatus = Literal["started", "delta", "completed", "failed"]
 logger = logging.getLogger(__name__)
+_SESSION_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 class SsePayload(TypedDict):
@@ -159,6 +162,29 @@ class ChatStreamingService:
         self._memory_service = memory_service
 
     async def stream_message(
+        self,
+        *,
+        owner_user_id: str,
+        session: ChatSessionRecord,
+        content: str,
+        metadata: JsonDict | None = None,
+        accessible_knowledge_base_ids: Sequence[str],
+    ) -> AsyncIterator[dict[str, object]]:
+        """Serialize all mutations and Agent work for one chat session."""
+        # ponytail: one-process lock map; use a database CAS when workers share sessions.
+        lock_key = f"{owner_user_id}:{session.id}"
+        lock = _SESSION_LOCKS.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            async for event in self._stream_message_unlocked(
+                owner_user_id=owner_user_id,
+                session=session,
+                content=content,
+                metadata=metadata,
+                accessible_knowledge_base_ids=accessible_knowledge_base_ids,
+            ):
+                yield event
+
+    async def _stream_message_unlocked(
         self,
         *,
         owner_user_id: str,
