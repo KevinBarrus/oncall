@@ -244,6 +244,12 @@ class SopBeliefFeedbackSubmissionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SopBeliefFeedbackResult:
+    applied: bool
+    states: tuple[SopBeliefStateRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ReportEvidenceLinkRecord:
     id: str
     owner_user_id: str
@@ -1306,6 +1312,21 @@ class SopBeliefRepository(Protocol):
         task_id: str,
     ) -> list[SopBeliefExposureRecord]:
         """List candidate exposures within the caller's scope."""
+        ...
+
+    async def record_feedback_once(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        rating: str,
+        context: str,
+        outcome: str,
+        failure_mode: str,
+        created_at: datetime | None = None,
+    ) -> SopBeliefFeedbackResult:
+        """Apply one scoped manual rating once and return current SOP states."""
         ...
 
 @dataclass(frozen=True, slots=True)

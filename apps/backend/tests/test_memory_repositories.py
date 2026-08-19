@@ -701,6 +701,65 @@ async def test_sop_belief_exposure_is_scoped_and_does_not_create_state(
     assert states == []
 
 
+@pytest.mark.asyncio
+async def test_sop_belief_feedback_submission_applies_one_rating_once(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repository = SQLiteSopBeliefRepository(create_memory_session_factory(engine))
+        await repository.record(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            document_id="doc-1",
+            document_version="hash-v1",
+            context="critical:checkout",
+            outcome="success",
+            source="auto",
+            failure_mode="",
+            total_tokens=120,
+            turns=2,
+            elapsed_seconds=1.5,
+        )
+        first = await repository.record_feedback_once(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            rating="helpful",
+            context="critical:checkout",
+            outcome="success",
+            failure_mode="",
+        )
+        replay = await repository.record_feedback_once(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            rating="helpful",
+            context="critical:checkout",
+            outcome="success",
+            failure_mode="",
+        )
+        evidence = await repository.list_evidence_for_task(
+            owner_user_id="user-a", tenant_id="user-a", task_id="task-1"
+        )
+    finally:
+        await engine.dispose()
+
+    assert first.applied is True
+    assert replay.applied is False
+    assert [(item.alpha, item.beta, item.observations) for item in first.states] == [
+        (5.0, 1.0, 2)
+    ]
+    assert [(item.alpha, item.beta, item.observations) for item in replay.states] == [
+        (5.0, 1.0, 2)
+    ]
+    assert [(item.source, item.attribution_stage, item.evidence_strength) for item in evidence] == [
+        ("auto", "legacy", "unknown"),
+        ("manual", "feedback", "manual"),
+    ]
+
+
 def test_repository_boundary_exposes_protocols_and_records_only() -> None:
     assert inspect.isclass(ChatMemoryRepository)
     assert all(
