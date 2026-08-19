@@ -348,6 +348,7 @@ def create_app(
     background_runtime = BackgroundJobRuntime(repositories.background_jobs)
     background_runtime.register("document_index", _document_index_job_handler(app))
     background_runtime.register("aiops_diagnosis", _aiops_job_handler(app))
+    background_runtime.register("chat_memory_compaction", _chat_memory_compaction_job_handler(app))
     app.state.background_job_runtime = background_runtime
     app.state.index_task_scheduler = index_task_scheduler or DurableDocumentIndexTaskScheduler(app)
     app.state.request_metrics = RequestMetrics()
@@ -1801,6 +1802,35 @@ def _document_index_job_handler(
     return handle
 
 
+def _chat_memory_compaction_job_handler(
+    app: FastAPI,
+) -> Callable[[BackgroundJobContext], Awaitable[None]]:
+    async def handle(context: BackgroundJobContext) -> None:
+        repositories = cast(MemoryRepositories, app.state.memory_repositories)
+        session = await repositories.chat.get_session(
+            owner_user_id=context.job.owner_user_id,
+            session_id=context.job.resource_id,
+        )
+        if session is None:
+            raise RuntimeError("Chat session is unavailable.")
+        history = await repositories.chat.list_messages(
+            owner_user_id=context.job.owner_user_id,
+            session_id=session.id,
+        )
+        service, prompt = await _chat_memory_context(
+            _request_for_app(app), owner_user_id=context.job.owner_user_id
+        )
+        await context.raise_if_cancelled()
+        await service.compact_once(
+            owner_user_id=context.job.owner_user_id,
+            session=session,
+            history=history,
+            system_prompt=prompt,
+        )
+
+    return handle
+
+
 def _aiops_job_handler(
     app: FastAPI,
 ) -> Callable[[BackgroundJobContext], Awaitable[None]]:
@@ -2151,11 +2181,33 @@ def _context_window_tokens(request: Request) -> int:
 
 
 def _chat_memory_service(request: Request) -> ChatMemoryService:
+    async def schedule(owner_user_id: str, session_id: str) -> None:
+        await _schedule_chat_memory_compaction(
+            request, owner_user_id=owner_user_id, session_id=session_id
+        )
+
     return ChatMemoryService(
         repositories=_memory_repositories(request),
         llm_provider=_llm_provider(request),
         context_window_tokens=_context_window_tokens(request),
+        schedule_compaction=schedule,
     )
+
+
+async def _schedule_chat_memory_compaction(
+    request: Request, *, owner_user_id: str, session_id: str
+) -> None:
+    await _background_job_repository(request).enqueue(
+        owner_user_id=owner_user_id,
+        job_id=f"job_{uuid4().hex}",
+        kind="chat_memory_compaction",
+        resource_type="chat_session",
+        resource_id=session_id,
+        payload={"sessionId": session_id},
+        max_attempts=3,
+        timeout_seconds=60,
+    )
+    await _background_job_runtime(request).start()
 
 
 async def _chat_memory_context(

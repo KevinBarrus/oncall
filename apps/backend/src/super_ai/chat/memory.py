@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -19,6 +21,9 @@ from super_ai.memory.repositories import (
     JsonDict,
     MemoryRepositories,
 )
+from super_ai.observability import emit_event
+
+logger = logging.getLogger(__name__)
 
 ChatMemoryMode = Literal["every_30_turns", "context_70_percent", "manual"]
 SUPPORTED_CHAT_MEMORY_MODES: tuple[ChatMemoryMode, ...] = (
@@ -34,9 +39,9 @@ MEMORY_COMPACTION_MESSAGE_CAP_CHARS = 4_000
 RUNTIME_OUTPUT_RESERVE_TOKENS = 2_048
 RUNTIME_SAFETY_MARGIN_PERCENT = 90.0
 MEMORY_SCHEMA_VERSION = 1
-MEMORY_CATEGORIES = frozenset(
-    {"goal", "fact", "decision", "todo", "source", "recent_context"}
-)
+MEMORY_CATEGORIES = frozenset({"goal", "fact", "decision", "todo", "source", "recent_context"})
+MEMORY_COMPACTION_TIMEOUT_SECONDS = 10
+MemoryCompactionScheduler = Callable[[str, str], Awaitable[None]]
 
 
 class ChatContextLimitReached(RuntimeError):
@@ -66,9 +71,10 @@ class ChatRuntimeContextBudget:
         context_window_tokens: int,
         llm_provider: LlmProvider | None = None,
     ) -> ChatRuntimeContextBudget:
-        input_limit = int(
-            context_window_tokens * RUNTIME_SAFETY_MARGIN_PERCENT / 100
-        ) - RUNTIME_OUTPUT_RESERVE_TOKENS
+        input_limit = (
+            int(context_window_tokens * RUNTIME_SAFETY_MARGIN_PERCENT / 100)
+            - RUNTIME_OUTPUT_RESERVE_TOKENS
+        )
         return cls(
             context_window_tokens=context_window_tokens,
             used_tokens=estimate_context_tokens(
@@ -104,11 +110,13 @@ class ChatMemoryService:
         repositories: MemoryRepositories,
         llm_provider: LlmProvider,
         context_window_tokens: int,
+        schedule_compaction: MemoryCompactionScheduler | None = None,
     ) -> None:
         if context_window_tokens <= 0:
             raise ValueError("context_window_tokens must be positive")
         self._repositories = repositories
         self._llm_provider = llm_provider
+        self._schedule_compaction = schedule_compaction
         self.context_window_tokens = context_window_tokens
 
     async def prepare_message(
@@ -131,34 +139,39 @@ class ChatMemoryService:
             llm_provider=self._llm_provider,
         )
         completed_turns = sum(message.role == "assistant" for message in uncompressed)
-        should_compact = (
-            current.memory_mode == "every_30_turns" and completed_turns >= 30
-        ) or (
+        should_compact = (current.memory_mode == "every_30_turns" and completed_turns >= 30) or (
             current.memory_mode == "context_70_percent"
             and _usage_percent(candidate_tokens, self.context_window_tokens)
             >= AUTO_CONTEXT_THRESHOLD_PERCENT
         )
-        if should_compact and uncompressed:
-            compactable = _select_messages_for_compaction(
-                messages=uncompressed,
-                system_prompt=system_prompt,
-                memory_summary=current.memory_summary,
-                context_window_tokens=self.context_window_tokens,
-                llm_provider=self._llm_provider,
-            )
-            current = await self._compact_messages(
-                owner_user_id=owner_user_id,
-                session=current,
-                messages=compactable,
-                system_prompt=system_prompt,
-            )
-            candidate_messages = [*uncompressed[len(compactable) :], candidate]
-            candidate_tokens = estimate_context_tokens(
-                system_prompt=system_prompt,
-                memory_summary=current.memory_summary,
-                messages=candidate_messages,
-                llm_provider=self._llm_provider,
-            )
+        if should_compact and uncompressed and candidate_tokens < self._hard_limit_tokens:
+            await self._schedule_automatic_compaction(owner_user_id, current.id)
+
+        if candidate_tokens >= self._hard_limit_tokens and uncompressed:
+            try:
+                current = await self.compact_once(
+                    owner_user_id=owner_user_id,
+                    session=current,
+                    history=history,
+                    system_prompt=system_prompt,
+                    timeout_seconds=MEMORY_COMPACTION_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                emit_event(
+                    logger,
+                    "chat.memory.compaction_failed",
+                    sessionId=current.id,
+                    errorCategory=exc.__class__.__name__,
+                )
+            else:
+                uncompressed = history[current.compacted_message_count :]
+                candidate_messages = [*uncompressed, candidate]
+                candidate_tokens = estimate_context_tokens(
+                    system_prompt=system_prompt,
+                    memory_summary=current.memory_summary,
+                    messages=candidate_messages,
+                    llm_provider=self._llm_provider,
+                )
 
         if (
             _usage_percent(candidate_tokens, self.context_window_tokens)
@@ -176,6 +189,52 @@ class ChatMemoryService:
             messages=tuple(candidate_messages),
             system_prompt=_prompt_with_memory(system_prompt, current.memory_summary),
         )
+
+    @property
+    def _hard_limit_tokens(self) -> float:
+        return self.context_window_tokens * HARD_CONTEXT_THRESHOLD_PERCENT / 100
+
+    async def _schedule_automatic_compaction(self, owner_user_id: str, session_id: str) -> None:
+        if self._schedule_compaction is None:
+            return
+        try:
+            await self._schedule_compaction(owner_user_id, session_id)
+        except Exception as exc:
+            emit_event(
+                logger,
+                "chat.memory.compaction_schedule_failed",
+                sessionId=session_id,
+                errorCategory=exc.__class__.__name__,
+            )
+
+    async def compact_once(
+        self,
+        *,
+        owner_user_id: str,
+        session: ChatSessionRecord,
+        history: list[ChatMessageRecord],
+        system_prompt: str,
+        timeout_seconds: float | None = None,
+    ) -> ChatSessionRecord:
+        uncompressed = history[session.compacted_message_count :]
+        compactable = _select_messages_for_compaction(
+            messages=uncompressed,
+            system_prompt=system_prompt,
+            memory_summary=session.memory_summary,
+            context_window_tokens=self.context_window_tokens,
+            llm_provider=self._llm_provider,
+        )
+        if not compactable:
+            return session
+        operation = self._compact_messages(
+            owner_user_id=owner_user_id,
+            session=session,
+            messages=compactable,
+            system_prompt=system_prompt,
+        )
+        if timeout_seconds is None:
+            return await operation
+        return await asyncio.wait_for(operation, timeout=timeout_seconds)
 
     async def refresh_usage(
         self,
@@ -245,20 +304,13 @@ class ChatMemoryService:
             )
         current = session
         while uncompressed:
-            compactable = _select_messages_for_compaction(
-                messages=uncompressed,
-                system_prompt=system_prompt,
-                memory_summary=current.memory_summary,
-                context_window_tokens=self.context_window_tokens,
-                llm_provider=self._llm_provider,
-            )
-            current = await self._compact_messages(
+            current = await self.compact_once(
                 owner_user_id=owner_user_id,
                 session=current,
-                messages=compactable,
+                history=history,
                 system_prompt=system_prompt,
             )
-            uncompressed = uncompressed[len(compactable) :]
+            uncompressed = history[current.compacted_message_count :]
         return current
 
     async def _compact_messages(
@@ -270,8 +322,7 @@ class ChatMemoryService:
         system_prompt: str,
     ) -> ChatSessionRecord:
         transcript = "\n".join(
-            f"[message_id={message.id}] {message.role}: {message.content}"
-            for message in messages
+            f"[message_id={message.id}] {message.role}: {message.content}" for message in messages
         )
         existing_memory = _memory_document(session.memory_summary)
         prompt = (
@@ -343,9 +394,7 @@ async def maybe_compress_tool_output(
     if token_count <= threshold_tokens:
         return text
 
-    capped = _select_text_for_compression(
-        text, max_chars=TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS
-    )
+    capped = _select_text_for_compression(text, max_chars=TOOL_OUTPUT_COMPRESS_INPUT_CAP_CHARS)
     prompt = (
         "你是一个工具输出压缩器。请将以下工具输出压缩为简洁摘要，保留所有关键事实、"
         "数字、名称、状态、错误信息和可操作信息。删除冗余描述和格式化噪音。"
@@ -361,10 +410,7 @@ async def maybe_compress_tool_output(
     except Exception:
         pass
 
-    return (
-        f"{capped[:4000]}\n\n"
-        f"[... 输出已按信号、首尾和时间线采样，原文约 {token_count} tokens]"
-    )
+    return f"{capped[:4000]}\n\n[... 输出已按信号、首尾和时间线采样，原文约 {token_count} tokens]"
 
 
 async def maybe_compress_structured_tool_output(
@@ -434,9 +480,7 @@ def _select_text_for_compression(text: str, *, max_chars: int) -> str:
         return text[:max_chars]
 
     signal_indexes = {
-        index
-        for index, line in enumerate(lines)
-        if TOOL_OUTPUT_SIGNAL_PATTERN.search(line)
+        index for index, line in enumerate(lines) if TOOL_OUTPUT_SIGNAL_PATTERN.search(line)
     }
     selected: list[int] = []
 
@@ -490,10 +534,7 @@ def estimate_context_tokens(
         for message in messages
         if message.role in {"user", "assistant"}
     )
-    return sum(
-        count_tokens(item["content"], llm_provider=llm_provider)
-        for item in values
-    )
+    return sum(count_tokens(item["content"], llm_provider=llm_provider) for item in values)
 
 
 def count_tokens(text: str, *, llm_provider: LlmProvider | None) -> int:
@@ -508,9 +549,7 @@ def count_tokens(text: str, *, llm_provider: LlmProvider | None) -> int:
             return max(0, int(counter(text)))
         except Exception:
             pass
-    approximate = int(
-        count_tokens_approximately(cast(Any, [{"role": "user", "content": text}]))
-    )
+    approximate = int(count_tokens_approximately(cast(Any, [{"role": "user", "content": text}])))
     return max(approximate, len("".join(text.split())))
 
 
@@ -519,14 +558,10 @@ def memory_payload(session: ChatSessionRecord, context_window_tokens: int) -> di
         "mode": session.memory_mode,
         "contextTokens": session.context_tokens,
         "contextWindowTokens": context_window_tokens,
-        "contextUsagePercent": _usage_percent(
-            session.context_tokens, context_window_tokens
-        ),
+        "contextUsagePercent": _usage_percent(session.context_tokens, context_window_tokens),
         "compactedMessageCount": session.compacted_message_count,
         "lastCompactedAt": (
-            session.last_compacted_at.isoformat()
-            if session.last_compacted_at is not None
-            else None
+            session.last_compacted_at.isoformat() if session.last_compacted_at is not None else None
         ),
         "canCompact": session.context_tokens > 0,
     }
@@ -611,8 +646,7 @@ def _validated_memory_document(text: str, *, allowed_source_ids: set[str]) -> Js
             or not isinstance(source_ids, list)
             or not source_ids
             or not all(
-                str(source_id) in allowed_source_ids
-                for source_id in cast(list[object], source_ids)
+                str(source_id) in allowed_source_ids for source_id in cast(list[object], source_ids)
             )
         ):
             return None
@@ -644,12 +678,15 @@ def _select_messages_for_compaction(
     selected: list[ChatMessageRecord] = []
     for message in messages:
         candidate = [*selected, message]
-        if estimate_context_tokens(
-            system_prompt=system_prompt,
-            memory_summary=memory_summary,
-            messages=candidate,
-            llm_provider=llm_provider,
-        ) <= budget:
+        if (
+            estimate_context_tokens(
+                system_prompt=system_prompt,
+                memory_summary=memory_summary,
+                messages=candidate,
+                llm_provider=llm_provider,
+            )
+            <= budget
+        ):
             selected.append(message)
             continue
         if selected:
@@ -691,11 +728,7 @@ def _memory_instruction(summary: str) -> str:
 
 
 def _prompt_with_memory(system_prompt: str, summary: str | None) -> str:
-    return (
-        f"{system_prompt}\n\n{_memory_instruction(summary)}"
-        if summary
-        else system_prompt
-    )
+    return f"{system_prompt}\n\n{_memory_instruction(summary)}" if summary else system_prompt
 
 
 def _extract_model_text(value: object) -> str:

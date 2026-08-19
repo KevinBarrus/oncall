@@ -250,14 +250,12 @@ def migrated_database_url(tmp_path: Path) -> str:
 
 
 @pytest.mark.asyncio
-async def test_thirty_turn_mode_compacts_without_deleting_history(
+async def test_thirty_turn_mode_defers_compaction_without_deleting_history(
     migrated_database_url: str,
 ) -> None:
     engine = create_memory_engine(migrated_database_url)
     try:
-        repositories = create_sqlite_memory_repositories(
-            create_memory_session_factory(engine)
-        )
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
         session = await repositories.chat.create_session(
             owner_user_id="user-a", session_id="chat-thirty"
         )
@@ -274,10 +272,16 @@ async def test_thirty_turn_mode_compacts_without_deleting_history(
             owner_user_id="user-a", session_id=session.id
         )
         provider = FakeProvider()
+        scheduled: list[tuple[str, str]] = []
+
+        async def schedule(owner_user_id: str, session_id: str) -> None:
+            scheduled.append((owner_user_id, session_id))
+
         service = ChatMemoryService(
             repositories=repositories,
             llm_provider=cast(LlmProvider, provider),
             context_window_tokens=131072,
+            schedule_compaction=schedule,
         )
 
         prepared = await service.prepare_message(
@@ -293,10 +297,11 @@ async def test_thirty_turn_mode_compacts_without_deleting_history(
     finally:
         await engine.dispose()
 
-    assert len(provider.model.inputs) == 1
-    assert prepared.session.compacted_message_count == 60
-    assert prepared.session.memory_summary is not None
-    assert len(prepared.messages) == 1
+    assert provider.model.inputs == []
+    assert scheduled == [("user-a", session.id)]
+    assert prepared.session.compacted_message_count == 0
+    assert prepared.session.memory_summary is None
+    assert len(prepared.messages) == 61
     assert len(persisted) == 60
 
 
@@ -306,9 +311,7 @@ async def test_context_threshold_and_manual_mode_are_session_scoped(
 ) -> None:
     engine = create_memory_engine(migrated_database_url)
     try:
-        repositories = create_sqlite_memory_repositories(
-            create_memory_session_factory(engine)
-        )
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
         threshold_session = await repositories.chat.create_session(
             owner_user_id="user-a", session_id="chat-threshold"
         )
@@ -373,14 +376,56 @@ async def test_context_threshold_and_manual_mode_are_session_scoped(
 
 
 @pytest.mark.asyncio
+async def test_failed_background_compaction_preserves_existing_memory(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-summary-failure"
+        )
+        await repositories.chat.append_message(
+            owner_user_id="user-a",
+            message_id="message-1",
+            session_id=session.id,
+            role="user",
+            content="需要压缩的历史消息",
+        )
+        history = await repositories.chat.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        service = ChatMemoryService(
+            repositories=repositories,
+            llm_provider=cast(LlmProvider, FailingProvider()),
+            context_window_tokens=1_000,
+        )
+
+        with pytest.raises(RuntimeError, match="summary unavailable"):
+            await service.compact_once(
+                owner_user_id="user-a",
+                session=session,
+                history=history,
+                system_prompt="你是助手。",
+            )
+        persisted = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert persisted is not None
+    assert persisted.memory_summary is None
+    assert persisted.compacted_message_count == 0
+
+
+@pytest.mark.asyncio
 async def test_hard_limit_rejects_candidate_without_persisting_it(
     migrated_database_url: str,
 ) -> None:
     engine = create_memory_engine(migrated_database_url)
     try:
-        repositories = create_sqlite_memory_repositories(
-            create_memory_session_factory(engine)
-        )
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
         session = await repositories.chat.create_session(
             owner_user_id="user-a", session_id="chat-limit"
         )
