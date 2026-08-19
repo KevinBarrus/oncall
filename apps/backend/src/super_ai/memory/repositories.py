@@ -213,6 +213,8 @@ class SopBeliefEvidenceRecord:
     total_tokens: int
     turns: int
     elapsed_seconds: float
+    attribution_stage: str
+    evidence_strength: str
     metadata: JsonDict
     created_at: datetime
 
@@ -1242,6 +1244,8 @@ class SopBeliefRepository(Protocol):
         total_tokens: int,
         turns: int,
         elapsed_seconds: float,
+        attribution_stage: str = "legacy",
+        evidence_strength: str = "unknown",
         metadata: JsonDict | None = None,
         created_at: datetime | None = None,
     ) -> SopBeliefStateRecord:

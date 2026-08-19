@@ -657,6 +657,8 @@ async def test_sop_belief_repository_scopes_versions_and_records_evidence(
     assert updated.failure_modes == {"timeout": 1}
     assert updated.contexts == {"critical:checkout": 2}
     assert [item.source for item in evidence] == ["auto", "manual"]
+    assert [item.attribution_stage for item in evidence] == ["legacy", "legacy"]
+    assert [item.evidence_strength for item in evidence] == ["unknown", "unknown"]
     assert evidence[1].metadata == {"rating": "not_helpful"}
     assert other_version.observations == 1
     assert cross_owner == []

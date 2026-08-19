@@ -1,7 +1,7 @@
 ## 1. 归因存储
 
 - [x] 1.1 新增 SOP 候选曝光表、记录类型、Repository 接口和 SQLite 实现，并增加 Alembic migration。
-- [ ] 1.2 为可更新的 SOP evidence 增加归因阶段与证据强度字段，保持旧记录可读取。
+- [x] 1.2 为可更新的 SOP evidence 增加归因阶段与证据强度字段，保持旧记录可读取。
 
 ## 2. 诊断归因链路
 

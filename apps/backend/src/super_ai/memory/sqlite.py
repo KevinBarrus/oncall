@@ -1563,6 +1563,8 @@ class SQLiteSopBeliefRepository:
         total_tokens: int,
         turns: int,
         elapsed_seconds: float,
+        attribution_stage: str = "legacy",
+        evidence_strength: str = "unknown",
         metadata: JsonDict | None = None,
         created_at: datetime | None = None,
     ) -> SopBeliefStateRecord:
@@ -1624,6 +1626,8 @@ class SQLiteSopBeliefRepository:
                         total_tokens=total_tokens,
                         turns=turns,
                         elapsed_seconds=elapsed_seconds,
+                        attribution_stage=attribution_stage,
+                        evidence_strength=evidence_strength,
                         metadata_json=metadata or {},
                         created_at=timestamp,
                     )
@@ -2178,6 +2182,8 @@ def _sop_belief_evidence_record(row: SopBeliefEvidenceModel) -> SopBeliefEvidenc
         total_tokens=row.total_tokens,
         turns=row.turns,
         elapsed_seconds=row.elapsed_seconds,
+        attribution_stage=row.attribution_stage,
+        evidence_strength=row.evidence_strength,
         metadata=_json_dict(row.metadata_json),
         created_at=_ensure_utc(row.created_at),
     )

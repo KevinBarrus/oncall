@@ -708,6 +708,8 @@ class SopBeliefEvidenceModel(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     elapsed_seconds: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    attribution_stage: Mapped[str] = mapped_column(String(40), nullable=False, default="legacy")
+    evidence_strength: Mapped[str] = mapped_column(String(40), nullable=False, default="unknown")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )
