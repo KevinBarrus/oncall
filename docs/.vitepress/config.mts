@@ -4,6 +4,7 @@ import { defineConfig } from "vitepress";
 const activeItems = [
   { text: "describe-qualified-mcp-tools", link: "/changes/active/describe-qualified-mcp-tools/" },
   { text: "isolate-mcp-connection-failures", link: "/changes/active/isolate-mcp-connection-failures/" },
+  { text: "observe-chat-tool-degradation", link: "/changes/active/observe-chat-tool-degradation/" },
   { text: "reuse-mcp-sessions", link: "/changes/active/reuse-mcp-sessions/" },
 ];
 

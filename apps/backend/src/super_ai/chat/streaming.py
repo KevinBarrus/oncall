@@ -568,7 +568,14 @@ class ChatStreamingService:
                         event=event,
                         error_message=error_message,
                     )
-        except Exception:
+        except Exception as exc:
+            emit_event(
+                logger,
+                "chat.tool_audit.failed",
+                toolName=event.name,
+                toolStatus=event.status,
+                errorCategory=exc.__class__.__name__,
+            )
             return
 
     async def _create_and_finalize_missing_audit(

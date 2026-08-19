@@ -407,8 +407,17 @@ async def maybe_compress_tool_output(
         summary = _extract_model_text(response).strip()
         if summary:
             return f"[compressed] {summary}"
-    except Exception:
-        pass
+        failure_category = "EmptySummary"
+    except Exception as exc:
+        failure_category = exc.__class__.__name__
+
+    emit_event(
+        logger,
+        "chat.tool_compression.fallback",
+        toolName=tool_name,
+        compressionMode="sampled_fallback",
+        failureCategory=failure_category,
+    )
 
     return f"{capped[:4000]}\n\n[... 输出已按信号、首尾和时间线采样，原文约 {token_count} tokens]"
 

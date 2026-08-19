@@ -127,6 +127,50 @@ def test_agent_event_adapter_parses_langgraph_model_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_audit_failure_is_logged_without_tool_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingAuditRepository:
+        async def create_for_chat_session(self, **_kwargs: object) -> object:
+            raise RuntimeError("audit-secret")
+
+    logging.getLogger("super_ai.chat.streaming").disabled = False
+    caplog.set_level(logging.INFO, logger="super_ai.chat.streaming")
+    service = ChatStreamingService(
+        repositories=cast(
+            MemoryRepositories, SimpleNamespace(tool_call_audits=FailingAuditRepository())
+        ),
+        agent_runner=FakeChatAgentRunner(events=[]),
+    )
+
+    await service._persist_tool_call_audit(
+        owner_user_id="owner-secret",
+        session_id="session-secret",
+        event=ChatAgentToolCall(
+            id="tool-secret",
+            name="SearchLog",
+            status="started",
+            input={"query": "query-secret"},
+        ),
+    )
+
+    events = [
+        json.loads(record.message) for record in caplog.records if record.message.startswith("{")
+    ]
+    assert events == [
+        {
+            "event": "chat.tool_audit.failed",
+            "toolName": "SearchLog",
+            "toolStatus": "started",
+            "errorCategory": "RuntimeError",
+        }
+    ]
+    emitted = "\n".join(record.message for record in caplog.records)
+    assert "query-secret" not in emitted
+    assert "audit-secret" not in emitted
+
+
+@pytest.mark.asyncio
 async def test_streaming_chat_emits_sse_events_and_persists_messages(
     migrated_database_url: str,
     caplog: pytest.LogCaptureFixture,

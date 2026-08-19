@@ -8,6 +8,7 @@ title: OpenSpec 变更
 
 - [describe-qualified-mcp-tools](/changes/active/describe-qualified-mcp-tools/)
 - [isolate-mcp-connection-failures](/changes/active/isolate-mcp-connection-failures/)
+- [observe-chat-tool-degradation](/changes/active/observe-chat-tool-degradation/)
 - [reuse-mcp-sessions](/changes/active/reuse-mcp-sessions/)
 
 ## 已归档

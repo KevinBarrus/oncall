@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -203,9 +204,13 @@ async def test_tool_compression_scans_tail_and_signal_regions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_compression_fallback_keeps_selected_regions() -> None:
+async def test_tool_compression_fallback_keeps_selected_regions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logging.getLogger("super_ai.chat.memory").disabled = False
+    caplog.set_level(logging.INFO, logger="super_ai.chat.memory")
     text = "\n".join([f"INFO request={index}" for index in range(2_000)])
-    text += "\nFATAL database corrupted request_id=abc123"
+    text += "\nFATAL database corrupted request_id=abc123 secret-log-content"
 
     compressed = await maybe_compress_tool_output(
         text,
@@ -215,6 +220,18 @@ async def test_tool_compression_fallback_keeps_selected_regions() -> None:
 
     assert len(compressed) <= 4_100
     assert "FATAL database corrupted" in compressed
+    events = [
+        json.loads(record.message) for record in caplog.records if record.message.startswith("{")
+    ]
+    assert events == [
+        {
+            "event": "chat.tool_compression.fallback",
+            "toolName": "SearchLog",
+            "compressionMode": "sampled_fallback",
+            "failureCategory": "RuntimeError",
+        }
+    ]
+    assert "secret-log-content" not in "\n".join(record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
