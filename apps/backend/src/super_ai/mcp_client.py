@@ -50,6 +50,15 @@ class _McpSession:
     session: ClientSession | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _McpServerReadiness:
+    name: str
+    endpoint: str
+    ok: bool
+    tool_count: int
+    error: str | None = None
+
+
 def create_current_time_tool() -> Any:
     """Create the explicit time tool used before time-range MCP queries."""
     from langchain_core.tools import StructuredTool
@@ -89,6 +98,7 @@ class LocalMcpClient:
         self._sessions = {connection.name: _McpSession(asyncio.Lock()) for connection in configured}
         self._discovered_tools: tuple[McpToolDefinition, ...] | None = None
         self._discovered_at = 0.0
+        self._server_readiness: tuple[_McpServerReadiness, ...] = ()
 
     async def discover_tools(self) -> list[McpToolDefinition]:
         if (
@@ -97,10 +107,26 @@ class LocalMcpClient:
         ):
             return list(self._discovered_tools)
         definitions: list[McpToolDefinition] = []
+        readiness: list[_McpServerReadiness] = []
         for connection in self._connections:
-            result = await self._run_connection(
-                connection,
-                lambda session: session.list_tools(),
+            try:
+                result = await self._run_connection(
+                    connection,
+                    lambda session: session.list_tools(),
+                )
+            except McpClientError:
+                readiness.append(
+                    _McpServerReadiness(
+                        connection.name,
+                        connection.url,
+                        False,
+                        0,
+                        "MCP server is unavailable.",
+                    )
+                )
+                continue
+            readiness.append(
+                _McpServerReadiness(connection.name, connection.url, True, len(result.tools))
             )
             for tool in result.tools:
                 definitions.append(
@@ -113,6 +139,7 @@ class LocalMcpClient:
                 )
         self._discovered_tools = tuple(definitions)
         self._discovered_at = monotonic()
+        self._server_readiness = tuple(readiness)
         return definitions
 
     async def aclose(self) -> None:
@@ -121,20 +148,24 @@ class LocalMcpClient:
                 await self._close_session(entry)
 
     async def readiness(self) -> dict[str, object]:
-        try:
-            tools = await self.discover_tools()
-        except McpClientError as exc:
-            return {
-                "ok": False,
-                "endpoint": self._connections[0].url if self._connections else None,
-                "toolCount": 0,
-                "error": str(exc),
+        tools = await self.discover_tools()
+        servers = [
+            {
+                "name": item.name,
+                "endpoint": item.endpoint,
+                "ok": item.ok,
+                "toolCount": item.tool_count,
+                "error": item.error,
             }
+            for item in self._server_readiness
+        ]
+        is_ready = any(item.ok for item in self._server_readiness)
         return {
-            "ok": True,
+            "ok": is_ready,
             "endpoint": self._connections[0].url if self._connections else None,
             "toolCount": len(tools),
-            "error": None,
+            "error": None if is_ready else "MCP server is unavailable.",
+            "servers": servers,
         }
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:

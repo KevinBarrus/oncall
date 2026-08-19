@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "isolate-mcp-connection-failures", link: "/changes/active/isolate-mcp-connection-failures/" },
   { text: "reuse-mcp-sessions", link: "/changes/active/reuse-mcp-sessions/" },
 ];
 

@@ -312,7 +312,9 @@ def create_app(
             yield
         finally:
             await runtime.stop()
-            await cast(McpConnectionService, application.state.mcp_connection_service).aclose()
+            mcp_service = application.state.mcp_connection_service
+            if isinstance(mcp_service, McpConnectionService):
+                await mcp_service.aclose()
             owned_engine = cast(AsyncEngine | None, application.state.memory_engine)
             if owned_engine is not None:
                 await owned_engine.dispose()
@@ -344,13 +346,7 @@ def create_app(
     app.state.chat_agent_runner = chat_agent_runner
     app.state.aiops_diagnostic_runner = aiops_diagnostic_runner
     app.state.alert_provider = alert_provider
-    mcp_config = project_config_section("mcp", config_path=resolved_project_config_path)
-    app.state.mcp_connection_service = McpConnectionService(
-        repositories,
-        default_url=required_str(mcp_config, "clsSseUrl"),
-        default_timeout_seconds=required_int(mcp_config, "timeoutSeconds"),
-        default_retries=required_int(mcp_config, "retries"),
-    )
+    app.state.mcp_connection_service = None
     if repositories.background_jobs is None:
         raise RuntimeError("Background job repository is required.")
     background_runtime = BackgroundJobRuntime(repositories.background_jobs)
@@ -1777,7 +1773,18 @@ def _feedback_service(request: Request) -> UserFeedbackService:
 
 
 def _mcp_connection_service(request: Request) -> McpConnectionService:
-    return cast(McpConnectionService, request.app.state.mcp_connection_service)
+    service = request.app.state.mcp_connection_service
+    if isinstance(service, McpConnectionService):
+        return service
+    mcp_config = project_config_section("mcp", config_path=request.app.state.project_config_path)
+    service = McpConnectionService(
+        _memory_repositories(request),
+        default_url=required_str(mcp_config, "clsSseUrl"),
+        default_timeout_seconds=required_int(mcp_config, "timeoutSeconds"),
+        default_retries=required_int(mcp_config, "retries"),
+    )
+    request.app.state.mcp_connection_service = service
+    return service
 
 
 async def _schedule_index_task(request: Request, *, owner_user_id: str, task_id: str) -> None:
@@ -2077,11 +2084,13 @@ async def _mcp_readiness_payload(request: Request) -> dict[str, object]:
     is_ready = result.get("ok") is True
     endpoint = result.get("endpoint")
     tool_count = result.get("toolCount")
+    servers = result.get("servers")
     return {
         "ok": is_ready,
         "endpoint": endpoint if isinstance(endpoint, str) else None,
         "toolCount": tool_count if isinstance(tool_count, int) else 0,
         "error": None if is_ready else "MCP server is unavailable.",
+        "servers": servers if isinstance(servers, list) else [],
     }
 
 

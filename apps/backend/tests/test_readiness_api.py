@@ -45,7 +45,21 @@ class FakeLlmProvider:
 
 class FakeMcpClient:
     async def readiness(self) -> dict[str, object]:
-        return {"ok": True, "endpoint": "http://mcp.test/sse", "toolCount": 3, "error": None}
+        return {
+            "ok": True,
+            "endpoint": "http://mcp.test/sse",
+            "toolCount": 3,
+            "error": None,
+            "servers": [
+                {
+                    "name": "cls",
+                    "endpoint": "http://mcp.test/sse",
+                    "ok": True,
+                    "toolCount": 3,
+                    "error": None,
+                }
+            ],
+        }
 
 
 def fake_mcp_client(_request: object) -> FakeMcpClient:
@@ -68,6 +82,7 @@ async def test_readiness_aggregates_safe_component_results(monkeypatch: pytest.M
     assert payload["status"] == "ready"
     assert payload["dependencies"]["sqlite"]["ok"] is True
     assert payload["dependencies"]["llm"]["model"] == "qwen-test"
+    assert payload["dependencies"]["mcp"]["servers"][0]["name"] == "cls"
     assert "apiKey" not in str(payload)
 
 
