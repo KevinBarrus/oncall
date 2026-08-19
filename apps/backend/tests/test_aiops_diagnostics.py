@@ -13,6 +13,7 @@ from alembic import command
 from alembic.config import Config
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
+from super_ai.aiops.sop_belief import SopBeliefService
 from super_ai.aiops.diagnostics import (
     _representative_log_records,
     _tool_result_summary,
@@ -239,6 +240,15 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
             query="Investigate worker CPU alarm",
             input_payload={"alert": {"severity": "critical"}},
         )
+        await repositories.documents.create_document(
+            owner_user_id="user-a",
+            document_id="document_sop",
+            knowledge_base_id="kb_user-a",
+            filename="worker-cpu-sop.md",
+            size_bytes=100,
+            mime_type="text/markdown",
+            content_hash="sop-hash-v1",
+        )
         embedding = FakeEmbeddingModel()
         retrieval = KnowledgeRetrievalTool(
             embedding_model=embedding,
@@ -259,6 +269,7 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
                 repositories=repositories,
                 index_task_scheduler=scheduler,
             ),
+            sop_belief_service=SopBeliefService(cast(Any, repositories.sop_beliefs)),
         )
 
         events = [
@@ -297,6 +308,11 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
             diagnostic_task_id=task.id,
         )
         cases = await repositories.diagnostics.list_cases(owner_user_id="user-a")
+        exposures = await cast(Any, repositories.sop_beliefs).list_exposures_for_task(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id=task.id,
+        )
     finally:
         await engine.dispose()
 
@@ -343,6 +359,10 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
     assert cases[0].document_id
     assert cases[0].index_task_id
     assert scheduler.scheduled == [("user-a", cases[0].index_task_id)]
+    assert [(item.document_id, item.document_version) for item in exposures] == [
+        ("document_sop", "sop-hash-v1")
+    ]
+    assert exposures[0].evidence_strength == "candidate"
     events = [
         json.loads(record.message) for record in caplog.records if record.message.startswith("{")
     ]

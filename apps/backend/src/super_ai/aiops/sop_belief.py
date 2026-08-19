@@ -233,6 +233,27 @@ class SopBeliefService:
         )
         return _belief_state_from_record(state)
 
+    async def record_exposure(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        document_id: str,
+        document_version: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        await self._repository.record_exposure(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            document_id=document_id,
+            document_version=document_version,
+            attribution_stage="retrieval",
+            evidence_strength="candidate",
+            metadata=metadata,
+        )
+
     async def record_feedback(
         self,
         *,

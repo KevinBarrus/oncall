@@ -428,6 +428,23 @@ class AiopsDiagnosticService:
             status="completed",
             payload=planner_payload,
         )
+        if self._sop_belief_service is not None:
+            for rank, hit in enumerate(sop_hits, start=1):
+                document_id = str(hit.get("documentId") or "")
+                document_version = str(hit.get("documentVersion") or "")
+                if not document_id or not document_version:
+                    continue
+                try:
+                    await self._sop_belief_service.record_exposure(
+                        owner_user_id=owner_user_id,
+                        tenant_id=owner_user_id,
+                        task_id=task_id,
+                        document_id=document_id,
+                        document_version=document_version,
+                        metadata={"rank": rank, "score": hit.get("score")},
+                    )
+                except Exception:
+                    pass  # exposure persistence must never break the diagnostic flow
         persisted_evidence_ids: list[str] = []
         if retrieval_result is not None:
             for citation in retrieval_result.citations:
