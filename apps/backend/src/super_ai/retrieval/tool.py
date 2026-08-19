@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Protocol, TypeVar
 
 from langchain_core.tools import StructuredTool
@@ -17,7 +18,10 @@ from super_ai.vector_store import StoredVectorChunk, VectorSearchResult
 from .hybrid import (
     BM25_CANDIDATE_LIMIT,
     RRF_K,
+    Bm25Corpus,
     Bm25Rank,
+    build_bm25_corpus,
+    rank_bm25_corpus,
     rank_bm25_documents,
     reciprocal_rank_fusion,
 )
@@ -27,6 +31,7 @@ DEFAULT_RETRIEVAL_TOP_K = 5
 MAX_RETRIEVAL_TOP_K = 5
 RERANK_CANDIDATE_LIMIT = 20
 MAX_CITATION_EXCERPT_LENGTH = 480
+KEYWORD_CORPUS_CACHE_TTL_SECONDS = 60
 
 
 class RetrievalVectorStore(Protocol):
@@ -149,6 +154,13 @@ class _FusedCandidate:
     rrf_score: float
 
 
+@dataclass(frozen=True, slots=True)
+class _KeywordCorpusCacheEntry:
+    chunks: list[StoredVectorChunk]
+    corpus: Bm25Corpus | None
+    created_at: float
+
+
 class _ScopedChunk(Protocol):
     @property
     def chunk_id(self) -> str: ...
@@ -188,6 +200,7 @@ class KnowledgeRetrievalTool:
         self._embedding_model = embedding_model
         self._vector_store = vector_store
         self._rerank_model = rerank_model
+        self._keyword_corpora: dict[tuple[str, tuple[str, ...]], _KeywordCorpusCacheEntry] = {}
 
     async def run(
         self,
@@ -303,23 +316,37 @@ class KnowledgeRetrievalTool:
         knowledge_base_ids: Sequence[str],
         filters: KnowledgeRetrievalFilters,
     ) -> tuple[list[StoredVectorChunk], list[Bm25Rank]]:
-        chunks = await asyncio.to_thread(
-            self._vector_store.list_chunks,
-            tenant_id=owner_user_id,
-            knowledge_base_ids=knowledge_base_ids,
-        )
+        cache_key = (owner_user_id, tuple(sorted(knowledge_base_ids)))
+        cached = self._keyword_corpora.get(cache_key)
+        if cached is None or monotonic() - cached.created_at >= KEYWORD_CORPUS_CACHE_TTL_SECONDS:
+            chunks = await asyncio.to_thread(
+                self._vector_store.list_chunks,
+                tenant_id=owner_user_id,
+                knowledge_base_ids=knowledge_base_ids,
+            )
+            corpus = build_bm25_corpus([chunk.content for chunk in chunks]) if chunks else None
+            cached = _KeywordCorpusCacheEntry(chunks, corpus, monotonic())
+            self._keyword_corpora[cache_key] = cached
         filtered_chunks = _filter_chunks(
-            chunks,
+            cached.chunks,
             owner_user_id=owner_user_id,
             knowledge_base_ids=knowledge_base_ids,
             filters=filters,
         )
-        ranks = await asyncio.to_thread(
-            rank_bm25_documents,
-            query=query,
-            documents=[chunk.content for chunk in filtered_chunks],
-            limit=BM25_CANDIDATE_LIMIT,
-        )
+        if filtered_chunks == cached.chunks and cached.corpus is not None:
+            ranks = await asyncio.to_thread(
+                rank_bm25_corpus,
+                query=query,
+                corpus=cached.corpus,
+                limit=BM25_CANDIDATE_LIMIT,
+            )
+        else:
+            ranks = await asyncio.to_thread(
+                rank_bm25_documents,
+                query=query,
+                documents=[chunk.content for chunk in filtered_chunks],
+                limit=BM25_CANDIDATE_LIMIT,
+            )
         return filtered_chunks, ranks
 
 

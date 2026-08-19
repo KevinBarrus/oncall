@@ -195,6 +195,36 @@ async def test_retrieval_tool_returns_empty_results_without_fabricating_content(
 
 
 @pytest.mark.asyncio
+async def test_keyword_corpus_cache_reuses_scope_and_keeps_scopes_isolated() -> None:
+    chunk = StoredVectorChunk(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        knowledge_base_id="kb-a",
+        owner_user_id="user-a",
+        tenant_id="user-a",
+        content="database timeout runbook",
+        source="runbook.md",
+        created_at=1,
+        metadata={},
+    )
+    store = FakeRetrievalVectorStore(chunks=[chunk])
+    tool = KnowledgeRetrievalTool(
+        embedding_model=FakeEmbeddingModel(),
+        vector_store=store,
+        rerank_model=FakeRerankModel(),
+    )
+
+    for knowledge_base_ids in (("kb-a",), ("kb-a",), ("kb-b",)):
+        await tool.run(
+            KnowledgeRetrievalToolInput(query="database timeout"),
+            owner_user_id="user-a",
+            accessible_knowledge_base_ids=knowledge_base_ids,
+        )
+
+    assert [call["knowledge_base_ids"] for call in store.list_calls] == [["kb-a"], ["kb-b"]]
+
+
+@pytest.mark.asyncio
 async def test_retrieval_tool_filters_hits_by_document_metadata_and_scope() -> None:
     matching_hit = VectorSearchResult(
         chunk_id="chunk_match",

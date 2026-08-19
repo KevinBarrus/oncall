@@ -31,6 +31,12 @@ class Bm25Rank:
 
 
 @dataclass(frozen=True, slots=True)
+class Bm25Corpus:
+    tokens: Sequence[Sequence[str]]
+    scorer: _Bm25Scorer
+
+
+@dataclass(frozen=True, slots=True)
 class ReciprocalRank:
     """One fused rank with optional source-list positions."""
 
@@ -64,16 +70,30 @@ def rank_bm25_documents(
     limit: int = BM25_CANDIDATE_LIMIT,
 ) -> list[Bm25Rank]:
     """Rank documents with BM25 while excluding documents with no token overlap."""
-    query_tokens = tokenize_hybrid_text(query)
-    if not query_tokens or not documents or limit < 1:
+    if not documents:
         return []
-    corpus_tokens = [tokenize_hybrid_text(document) for document in documents]
-    scorer = _create_bm25_scorer(corpus_tokens)
-    scores = scorer.get_scores(query_tokens)
+    return rank_bm25_corpus(query=query, corpus=build_bm25_corpus(documents), limit=limit)
+
+
+def build_bm25_corpus(documents: Sequence[str]) -> Bm25Corpus:
+    tokens = [tokenize_hybrid_text(document) for document in documents]
+    return Bm25Corpus(tokens=tokens, scorer=_create_bm25_scorer(tokens))
+
+
+def rank_bm25_corpus(
+    *,
+    query: str,
+    corpus: Bm25Corpus,
+    limit: int = BM25_CANDIDATE_LIMIT,
+) -> list[Bm25Rank]:
+    query_tokens = tokenize_hybrid_text(query)
+    if not query_tokens or not corpus.tokens or limit < 1:
+        return []
+    scores = corpus.scorer.get_scores(query_tokens)
     query_token_set = set(query_tokens)
     ranks = [
         Bm25Rank(index=index, score=float(scores[index]))
-        for index, tokens in enumerate(corpus_tokens)
+        for index, tokens in enumerate(corpus.tokens)
         if query_token_set.intersection(tokens)
     ]
     ranks.sort(key=lambda item: (-item.score, item.index))
