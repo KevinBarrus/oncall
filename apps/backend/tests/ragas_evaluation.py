@@ -41,6 +41,7 @@ from typing import Any, Literal, cast
 
 import httpx
 import jieba
+import pytest
 from dotenv import load_dotenv
 
 from super_ai.llm import LlmProvider, build_default_llm_provider
@@ -465,23 +466,32 @@ def _normalise_evidence(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_score(text: str) -> float:
-    text = text.strip()
-    match = re.search(r"(\d+\.?\d*)", text)
-    if match:
-        return round(max(0.0, min(1.0, float(match.group(1)))), 4)
-    return 0.5
+@dataclass(frozen=True)
+class JudgeScore:
+    score: float | None
+    error: str | None = None
+
+
+def _parse_score(text: str) -> float | None:
+    """Accept only one complete score, never the first number in arbitrary text."""
+    match = re.fullmatch(r"\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*", text)
+    return round(float(match.group(1)), 4) if match else None
+
+
+def _score_display(value: object) -> str:
+    return f"{value:.2f}" if isinstance(value, (int, float)) else "N/A"
 
 
 async def _llm_score(
     judge_model: Any,
     prompt: str,
-) -> float:
+) -> JudgeScore:
     try:
         resp = await judge_model.ainvoke(prompt)
-        return _parse_score(_extract_text(resp))
-    except Exception:
-        return 0.5
+        score = _parse_score(_extract_text(resp))
+        return JudgeScore(score=score, error=None if score is not None else "invalid_score")
+    except Exception as exc:
+        return JudgeScore(score=None, error=exc.__class__.__name__)
 
 
 async def _score_one_question(
@@ -490,28 +500,37 @@ async def _score_one_question(
     answer: str,
     contexts: list[str],
     ground_truth: str,
-) -> dict[str, float]:
-    scores: dict[str, float] = {}
+) -> tuple[dict[str, float | None], dict[str, str]]:
+    scores: dict[str, float | None] = {}
+    errors: dict[str, str] = {}
+
+    def record(key: str, result: JudgeScore) -> float | None:
+        if result.error is not None:
+            errors[key] = result.error
+        return result.score
 
     # Context Precision — per-chunk relevance average (all chunks)
     cp_vals: list[float] = []
-    for ctx in contexts:
-        cp_vals.append(
+    for index, ctx in enumerate(contexts):
+        score = record(
+            f"context_precision[{index}]",
             await _llm_score(
                 judge_model,
                 f"这个文档片段与问题直接相关吗？\n"
                 f"问题：{question}\n片段：{ctx[:500]}\n"
                 f"只输出0.0到1.0的数字。1.0=高度相关，0.0=不相关。",
-            )
+            ),
         )
-    scores["context_precision"] = round(sum(cp_vals) / len(cp_vals), 4) if cp_vals else 0.0
+        if score is not None:
+            cp_vals.append(score)
+    scores["context_precision"] = round(sum(cp_vals) / len(cp_vals), 4) if cp_vals else None
     # CP@3 — only top-3 chunks (less noise for small-KB scenarios)
     top3 = cp_vals[:3] if len(cp_vals) >= 3 else cp_vals
-    scores["context_precision_at_3"] = round(sum(top3) / len(top3), 4) if top3 else 0.0
+    scores["context_precision_at_3"] = round(sum(top3) / len(top3), 4) if top3 else None
 
     # Faithfulness — penalize false attribution to documents
     doc_text = chr(10).join(contexts)[:2000]
-    scores["faithfulness"] = await _llm_score(
+    scores["faithfulness"] = record("faithfulness", await _llm_score(
         judge_model,
         f"评估回答的忠实度。回答可能包含两种信息：📄标记的（声称来自文档）和💡标记的（来自常识）。\n"
         f"评分标准：\n"
@@ -521,26 +540,26 @@ async def _score_one_question(
         f"文档内容：\n{doc_text}\n\n"
         f"回答：{answer[:1500]}\n\n"
         f"只输出0.0-1.0的数字。",
-    )
+    ))
 
     # Answer Relevancy
-    scores["answer_relevancy"] = await _llm_score(
+    scores["answer_relevancy"] = record("answer_relevancy", await _llm_score(
         judge_model,
         f"评估这个回答是否直接回答了用户问题。\n"
         f"问题：{question}\n回答：{answer[:1000]}\n"
         f"只输出0.0-1.0的数字，1.0=直接完整回答，0.0=完全偏离。",
-    )
+    ))
 
     # Context Recall
-    scores["context_recall"] = await _llm_score(
+    scores["context_recall"] = record("context_recall", await _llm_score(
         judge_model,
         f"评估文档片段覆盖了标准答案中多少个关键要点。\n"
         f"标准答案：{ground_truth[:1500]}\n"
         f"文档片段：{chr(10).join(contexts)[:2000]}\n"
         f"只输出0.0-1.0的数字，1.0=覆盖全部要点，0.0=未覆盖任何要点。",
-    )
+    ))
 
-    return scores
+    return scores, errors
 
 
 # ---------------------------------------------------------------------------
@@ -617,18 +636,20 @@ async def _clean_room_baseline(
 
         # Use ground truth itself as "perfect context"
         answer, gen_ms = await _generate_answer(model, question, [ground_truth])
-        llm_scores = await _score_one_question(
+        llm_scores, judge_errors = await _score_one_question(
             judge_model, question, answer, [ground_truth], ground_truth
         )
 
         for k, v in llm_scores.items():
-            scores_agg[k].append(v)
+            if v is not None:
+                scores_agg[k].append(v)
 
         results.append(
             {
                 "question": question[:120],
                 "answer": answer[:800],
                 "scores": llm_scores,
+                "judgeErrors": judge_errors,
                 "latencyGenMs": round(gen_ms, 1),
             }
         )
@@ -728,25 +749,27 @@ async def _end_to_end_chat_evaluation(
                 ]
                 if isinstance(reference.get("excerpt"), str)
             ]
-            llm_scores = await _score_one_question(
-                judge_model, question, answer, contexts, ground_truth
-            )
-            for key, value in llm_scores.items():
+        llm_scores, judge_errors = await _score_one_question(
+            judge_model, question, answer, contexts, ground_truth
+        )
+        for key, value in llm_scores.items():
+            if value is not None:
                 scores_agg[key].append(value)
-            results.append(
-                {
-                    "question": question,
-                    "groundTruth": ground_truth[:500],
-                    "answer": answer[:1000],
-                    "contexts": [context[:300] for context in contexts],
-                    "contextCount": len(contexts),
-                    "scores": llm_scores,
-                    "sseEventCount": len(events),
-                    "toolCallCount": sum(event["event"] == "tool.call" for event in events),
-                    "completed": any(event["event"] == "complete" for event in events),
-                    "latencyMs": round((time.monotonic() - item_started) * 1000, 1),
-                }
-            )
+        results.append(
+            {
+                "question": question,
+                "groundTruth": ground_truth[:500],
+                "answer": answer[:1000],
+                "contexts": [context[:300] for context in contexts],
+                "contextCount": len(contexts),
+                "scores": llm_scores,
+                "judgeErrors": judge_errors,
+                "sseEventCount": len(events),
+                "toolCallCount": sum(event["event"] == "tool.call" for event in events),
+                "completed": any(event["event"] == "complete" for event in events),
+                "latencyMs": round((time.monotonic() - item_started) * 1000, 1),
+            }
+        )
 
     return {
         "status": "completed",
@@ -768,7 +791,7 @@ async def _end_to_end_chat_evaluation(
 @dataclass
 class EvalRun:
     strategy: StrategyId
-    metrics: dict[str, float] = field(default_factory=dict)
+    metrics: dict[str, object] = field(default_factory=dict)
     per_item: list[dict[str, object]] = field(default_factory=list)
 
 
@@ -913,7 +936,7 @@ async def run_evaluation(
             recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
 
             # LLM scores
-            llm_scores = await _score_one_question(
+            llm_scores, judge_errors = await _score_one_question(
                 deepseek_judge,
                 question,
                 answer,
@@ -922,13 +945,13 @@ async def run_evaluation(
             )
 
             # Error classification
-            error_cat = _classify_error(
+            error_cat: ErrorCategory | str = "judge-unavailable" if judge_errors else _classify_error(
                 [chunk.content for chunk in contexts],
                 ground_truth,
-                llm_scores["context_precision"],
-                llm_scores["context_recall"],
-                llm_scores["faithfulness"],
-                llm_scores["answer_relevancy"],
+                cast(float, llm_scores["context_precision"]),
+                cast(float, llm_scores["context_recall"]),
+                cast(float, llm_scores["faithfulness"]),
+                cast(float, llm_scores["answer_relevancy"]),
             )
 
             item: dict[str, object] = {
@@ -946,6 +969,7 @@ async def run_evaluation(
                     "ndcg_at_5": round(ndcg_val, 4),
                     "atomic_fact_recall_at_5": round(recall_val, 4),
                 },
+                "judgeErrors": judge_errors,
                 "latency": {
                     "retrievalMs": round(retrieval_ms, 1),
                     "generationMs": round(generation_ms, 1),
@@ -963,7 +987,8 @@ async def run_evaluation(
             fai = llm_scores["faithfulness"]
             gen_display = f" gen={generation_ms:.0f}ms" if generation_ms > 0 else ""
             print(
-                f"      CP={cp:.2f} CP@3={cp3:.2f} CR={cr:.2f} AR={ar:.2f} F={fai:.2f} "
+                f"      CP={_score_display(cp)} CP@3={_score_display(cp3)} "
+                f"CR={_score_display(cr)} AR={_score_display(ar)} F={_score_display(fai)} "
                 f"MRR={mrr_val:.2f} NDCG={ndcg_val:.2f} FactR@5={recall_val:.2f} "
                 f"| ret={retrieval_ms:.0f}ms{gen_display} | [{error_cat}]"
             )
@@ -971,7 +996,7 @@ async def run_evaluation(
             await asyncio.sleep(0.3)  # rate limit
 
         # Aggregate metrics
-        agg: dict[str, float] = {}
+        agg: dict[str, object] = {}
         for key in ("context_precision", "context_precision_at_3", "faithfulness",
                      "answer_relevancy", "context_recall",
                      "mrr", "ndcg_at_5", "atomic_fact_recall_at_5"):
@@ -980,7 +1005,11 @@ async def run_evaluation(
                 for i in run.per_item
                 if isinstance(cast(dict[str, object], i["scores"]).get(key), (int, float))
             ]
-            agg[key] = round(sum(cast(float, v) for v in vals) / len(vals), 4) if vals else 0.0
+            agg[key] = round(sum(cast(float, v) for v in vals) / len(vals), 4) if vals else None
+
+        judge_failures = sum(bool(cast(dict[str, object], item.get("judgeErrors", {}))) for item in run.per_item)
+        agg["judge_failure_count"] = judge_failures
+        agg["judge_failure_rate"] = round(judge_failures / len(run.per_item), 4) if run.per_item else 0.0
 
         agg["avg_retrieval_ms"] = round(
             sum(cast(float, cast(dict[str, object], i["latency"])["retrievalMs"]) for i in run.per_item)
@@ -1009,12 +1038,18 @@ async def run_evaluation(
         eval_runs[strategy_id] = run
 
         print(f"\n  ── {strategy_id} 汇总 ──")
-        print(f"  CP={agg['context_precision']:.4f}  CP@3={agg.get('context_precision_at_3', 0):.4f}  "
-              f"CR={agg['context_recall']:.4f}  AR={agg['answer_relevancy']:.4f}  F={agg['faithfulness']:.4f}")
         print(
-            f"  MRR={agg['mrr']:.4f}  NDCG@5={agg['ndcg_at_5']:.4f}  "
-            f"FactR@5={agg['atomic_fact_recall_at_5']:.4f}"
+            f"  CP={_score_display(agg['context_precision'])}  "
+            f"CP@3={_score_display(agg.get('context_precision_at_3'))}  "
+            f"CR={_score_display(agg['context_recall'])}  "
+            f"AR={_score_display(agg['answer_relevancy'])}  "
+            f"F={_score_display(agg['faithfulness'])}"
         )
+        print(
+            f"  MRR={_score_display(agg['mrr'])}  NDCG@5={_score_display(agg['ndcg_at_5'])}  "
+            f"FactR@5={_score_display(agg['atomic_fact_recall_at_5'])}"
+        )
+        print(f"  Judge failure rate: {agg['judge_failure_rate']:.2%}")
         print(f"  Latency: retrieval {agg['avg_retrieval_ms']:.0f}ms  generation {agg['avg_generation_ms']:.0f}ms")
         print(f"  Errors: {dict(error_dist)}")
 
@@ -1025,8 +1060,11 @@ async def run_evaluation(
     print(f"  [{len(strategies)+3}/{len(strategies)+2}] Clean-room baseline (gold context)")
     print(f"{'='*60}")
     clean_room = await _clean_room_baseline(chat_model, deepseek_judge, qa_pairs)
-    print(f"  AR={clean_room['averages']['answer_relevancy']:.4f}  "
-          f"F={clean_room['averages']['faithfulness']:.4f}")
+    clean_room_averages = cast(dict[str, object], clean_room["averages"])
+    print(
+        f"  AR={_score_display(clean_room_averages.get('answer_relevancy'))}  "
+        f"F={_score_display(clean_room_averages.get('faithfulness'))}"
+    )
 
     end_to_end: dict[str, object] | None = None
     if e2e:
@@ -1085,10 +1123,11 @@ def _low_score_samples(
     for sid, run in eval_runs.items():
         for item in run.per_item:
             scores = cast(dict[str, object], item["scores"])
-            avg = (
-                cast(float, scores.get("context_precision", 0))
-                + cast(float, scores.get("context_recall", 0))
-            ) / 2
+            cp = scores.get("context_precision")
+            cr = scores.get("context_recall")
+            if not isinstance(cp, (int, float)) or not isinstance(cr, (int, float)):
+                continue
+            avg = (float(cp) + float(cr)) / 2
             scored.append((avg, sid, item))
     scored.sort(key=lambda x: x[0])
     return [
@@ -1170,6 +1209,7 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
         ("mrr", "MRR", False),
         ("ndcg_at_5", "NDCG@5", False),
         ("atomic_fact_recall_at_5", "Atomic Fact R@5", False),
+        ("judge_failure_rate", "Judge Failure Rate", False),
         ("avg_retrieval_ms", "Retrieval (ms)", False),
         ("avg_generation_ms", "Generation (ms)", False),
         ("avg_cache_load_ms", "Cache Load (ms)", False),
@@ -1328,8 +1368,18 @@ class TestRagasEvaluation:
 
     def test_parse_score(self) -> None:
         assert _parse_score("0.85") == 0.85
-        assert _parse_score("blah 0.42 blah") == 0.42
-        assert _parse_score("nothing") == 0.5
+        assert _parse_score("blah 0.42 blah") is None
+        assert _parse_score("nothing") is None
+
+    @pytest.mark.asyncio
+    async def test_judge_failure_is_recorded_without_a_score(self) -> None:
+        class FailingJudge:
+            async def ainvoke(self, _prompt: str) -> object:
+                raise TimeoutError("judge timed out")
+
+        result = await _llm_score(FailingJudge(), "score this")
+        assert result.score is None
+        assert result.error == "TimeoutError"
 
     def test_parse_sse_keeps_agent_and_reference_events(self) -> None:
         events = _parse_sse(
