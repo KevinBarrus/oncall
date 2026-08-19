@@ -90,5 +90,59 @@
     "ground_truth": "文档中未涉及新成员入职流程和开发环境搭建指南。当前知识库覆盖的是运维告警、服务架构和故障复盘相关内容，不包含工程 onboarding 流程。",
     "reference": "无",
     "kb_dependent": false
+  },
+  {
+    "question": "user-service 的 P99 延迟阈值和错误率阈值分别是多少？",
+    "ground_truth": "根据团队告警响应规范，user-service 的 P99 延迟阈值为超过 500ms，错误率阈值为超过 0.5%。",
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "question": "api-gateway 的错误率超过阈值后，应该按照什么优先级处理？",
+    "ground_truth": "api-gateway 的错误率阈值为超过 1%。它属于核心服务，相关告警按 P0/P1 优先级处理，具体等级还要结合持续时间、影响面和告警规则判断。",
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "question": "为什么 api-gateway 告警后可以抑制 user-service 和 order-service 的同因告警？",
+    "ground_truth": "api-gateway 是流量入口，其故障发生后，下游 user-service 和 order-service 的告警通常是同一故障的症状而非根因。使用 Alertmanager inhibit_rules 抑制同因告警可以减少通知噪音，让值班人聚焦根因。",
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "question": "notification-service 部署了几个副本，依赖哪些组件？",
+    "ground_truth": "notification-service 使用 Python 3.12/FastAPI，部署 2 个副本，依赖 RabbitMQ 和 user-service。",
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "question": "RabbitMQ 在当前服务拓扑中有什么高可用风险？",
+    "ground_truth": "当前 RabbitMQ 没有配置镜像队列，节点重启可能导致消息丢失，这是服务拓扑文档记录的已知脆弱点。",
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "question": "INC-2026-0715 中，临时调大 user-db 连接上限后为什么还要回滚 order-service？",
+    "ground_truth": "调大 user-db 的 max_connections=400 到 600 只是临时恢复服务，不能消除根因。真正根因是 order-service 发布时把 gRPC 连接池 poolSize 从 20 错改为 200，导致调用链放大并耗尽数据库连接，因此还必须回滚 order-service。",
+    "reference": "历史故障复盘",
+    "kb_dependent": true
+  },
+  {
+    "question": "INC-2026-0618 的事故影响是什么？它属于缓存击穿还是缓存雪崩？",
+    "ground_truth": "事故中下单成功率降至 63%，数据未丢失；根因是单个热门 key 过期后大量请求同时访问数据库，因此属于缓存击穿而不是大规模缓存雪崩。",
+    "reference": "历史故障复盘",
+    "kb_dependent": true
+  },
+  {
+    "question": "user-db 和 order-db 的备份策略是什么？",
+    "ground_truth": "user-db 和 order-db 都采用每日全量备份加 binlog 增量备份。",
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "question": "知识库中是否规定了生产环境的数据库账号申请流程？",
+    "ground_truth": "当前知识库文档未规定生产环境数据库账号申请流程，现有内容主要覆盖告警规范、服务拓扑和历史故障复盘。",
+    "reference": "无",
+    "kb_dependent": false
   }
 ]

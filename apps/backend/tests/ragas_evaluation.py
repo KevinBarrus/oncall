@@ -125,6 +125,16 @@ def _load_qa_pairs(limit: int | None = None) -> list[dict[str, Any]]:
     return items[:limit] if limit else items
 
 
+def _dataset_distribution(qa_pairs: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Summarize answerable and unanswerable fixture strata."""
+    distribution: dict[str, int] = defaultdict(int)
+    for item in qa_pairs:
+        reference = cast(str, item.get("reference", "unknown"))
+        stratum = "unanswerable" if not item.get("kb_dependent", True) else "answerable"
+        distribution[f"{stratum}:{reference}"] += 1
+    return dict(sorted(distribution.items()))
+
+
 # ---------------------------------------------------------------------------
 # retrieval strategies
 # ---------------------------------------------------------------------------
@@ -979,6 +989,7 @@ async def run_evaluation(
             "judgeModel": DEEPSEEK_CHAT_MODEL,
             "rerankModel": "BAAI/bge-reranker-v2-m3",
             "e2e": e2e,
+            "datasetDistribution": _dataset_distribution(qa_pairs),
         },
         "strategies": {
             sid: {
@@ -1232,10 +1243,16 @@ def main() -> None:
 class TestRagasEvaluation:
     def test_qa_dataset_loads(self) -> None:
         pairs = _load_qa_pairs()
-        assert len(pairs) >= 10, f"Expected >=10 QA pairs, got {len(pairs)}"
+        assert len(pairs) >= 20, f"Expected >=20 QA pairs, got {len(pairs)}"
         for idx, qa in enumerate(pairs):
             assert qa["question"].strip(), f"Item {idx}: empty question"
             assert qa["ground_truth"].strip(), f"Item {idx}: empty ground_truth"
+
+    def test_dataset_distribution_covers_answerable_and_unanswerable_strata(self) -> None:
+        distribution = _dataset_distribution(_load_qa_pairs())
+        assert sum(distribution.values()) == len(_load_qa_pairs())
+        assert any(key.startswith("answerable:") for key in distribution)
+        assert any(key.startswith("unanswerable:") for key in distribution)
 
     def test_token_overlap(self) -> None:
         assert _token_overlap("nginx 502 error", "nginx 502 bad gateway") > 0.1

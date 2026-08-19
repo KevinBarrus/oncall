@@ -17,6 +17,9 @@ import httpx
 API_BASE = "http://127.0.0.1:8000"
 TEST_DATA = Path(__file__).resolve().parent / "data"
 DOCUMENTS = [
+    TEST_DATA / "team-alert-response-spec.md",
+    TEST_DATA / "service-topology.md",
+    TEST_DATA / "incident-postmortems.md",
     TEST_DATA / "nginx-troubleshooting.md",
     TEST_DATA / "k8s-pod-troubleshooting.md",
     TEST_DATA / "observability-metrics.md",
