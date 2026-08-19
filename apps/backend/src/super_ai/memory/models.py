@@ -743,6 +743,34 @@ class SopBeliefExposureModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SopBeliefFeedbackSubmissionModel(Base):
+    """One idempotent manual rating submission for a diagnostic task."""
+
+    __tablename__ = "sop_belief_feedback_submissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "tenant_id",
+            "task_id",
+            "rating",
+            name="uq_sop_belief_feedback_submission_scope_task_rating",
+        ),
+        Index(
+            "ix_sop_belief_feedback_submissions_scope_task",
+            "owner_user_id",
+            "tenant_id",
+            "task_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    rating: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReportEvidenceLinkModel(Base):
     """Owner-scoped provenance edge from a diagnostic report to evidence."""
 

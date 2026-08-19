@@ -1,7 +1,7 @@
 ## 1. 幂等持久化
 
-- [ ] 1.1 新增 SOP 反馈 submission 模型、记录类型、Repository 契约和 Alembic migration，并建立 owner/tenant/task/rating 唯一约束
-- [ ] 1.2 实现单事务的 SQLite `record_feedback_once`，使 claim、manual evidence 与 posterior 更新原子完成
+- [x] 1.1 新增 SOP 反馈 submission 模型、Repository 数据记录和 Alembic migration，并建立 owner/tenant/task/rating 唯一约束
+- [ ] 1.2 扩展 Repository 契约并实现单事务的 SQLite `record_feedback_once`，使 claim、manual evidence 与 posterior 更新原子完成
 
 ## 2. 诊断反馈接入
 

@@ -234,6 +234,16 @@ class SopBeliefExposureRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SopBeliefFeedbackSubmissionRecord:
+    id: str
+    owner_user_id: str
+    tenant_id: str
+    task_id: str
+    rating: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ReportEvidenceLinkRecord:
     id: str
     owner_user_id: str
@@ -1297,7 +1307,6 @@ class SopBeliefRepository(Protocol):
     ) -> list[SopBeliefExposureRecord]:
         """List candidate exposures within the caller's scope."""
         ...
-
 
 @dataclass(frozen=True, slots=True)
 class MemoryRepositories:
