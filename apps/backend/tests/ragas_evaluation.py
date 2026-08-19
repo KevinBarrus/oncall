@@ -7,7 +7,7 @@ Strategies:
   4. hybrid+rerank      — vector + BM25 + RRF + SiliconFlow BGE rerank
 
 Metrics:
-  - Deterministic (no LLM):  MRR, NDCG@5, Recall@5 (via token-overlap relevance)
+  - Deterministic (no LLM):  MRR, NDCG@5 (manual source relevance), atomic-fact Recall@5
   - LLM-as-judge (DeepSeek): Context Precision, Faithfulness, Answer Relevancy, Context Recall
   - Latency:  retrieval ms, generation ms per question
   - Error taxonomy:  data-gap / chunking / ranking / generation
@@ -33,7 +33,7 @@ import re
 import sys
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +89,11 @@ E2E_API_BASE_URL = os.environ.get("RAGAS_API_BASE_URL", "http://127.0.0.1:8000")
 TOP_K = 5
 MAX_CONTEXT_CHARS_PER_QUESTION = 6000
 GOLD_RELEVANCE_TOKEN_OVERLAP_THRESHOLD = 0.15  # jieba 分词后阈值（中文+英文混合）
+SOURCE_LABELS = {
+    "team-alert-response-spec.md": "团队告警响应规范",
+    "service-topology.md": "服务拓扑",
+    "incident-postmortems.md": "历史故障复盘",
+}
 
 # ---------------------------------------------------------------------------
 # key loading
@@ -122,6 +127,9 @@ def _load_qa_pairs(limit: int | None = None) -> list[dict[str, Any]]:
         for field in ("question", "ground_truth"):
             if not isinstance(item.get(field), str) or not item[field].strip():
                 raise ValueError(f"Item {idx}: '{field}' missing or empty.")
+        facts = item.get("atomic_facts")
+        if not isinstance(facts, list) or not all(isinstance(fact, str) for fact in facts):
+            raise ValueError(f"Item {idx}: 'atomic_facts' must be a string list.")
     return items[:limit] if limit else items
 
 
@@ -133,6 +141,32 @@ def _dataset_distribution(qa_pairs: Sequence[dict[str, Any]]) -> dict[str, int]:
         stratum = "unanswerable" if not item.get("kb_dependent", True) else "answerable"
         distribution[f"{stratum}:{reference}"] += 1
     return dict(sorted(distribution.items()))
+
+
+def _expected_sources(qa: Mapping[str, Any]) -> frozenset[str]:
+    reference = cast(str, qa.get("reference", "无"))
+    if reference == "无":
+        return frozenset()
+    return frozenset(part.strip() for part in reference.split("+") if part.strip())
+
+
+def _source_label(source: str) -> str:
+    return SOURCE_LABELS.get(Path(source).name, source)
+
+
+@dataclass(frozen=True)
+class EvalRetrievedChunk:
+    content: str
+    source: str
+    chunk_id: str
+
+
+def _eval_chunk(chunk: Any) -> EvalRetrievedChunk:
+    return EvalRetrievedChunk(
+        content=cast(str, chunk.content),
+        source=_source_label(cast(str, chunk.source)),
+        chunk_id=cast(str, chunk.chunk_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +193,7 @@ async def _retrieve_vector_only(
     question: str,
     owner_user_id: str,
     knowledge_base_ids: list[str],
-) -> tuple[list[str], float]:
+) -> tuple[list[EvalRetrievedChunk], float]:
     t0 = time.monotonic()
     vectors = await embedding_model.aembed_documents([question])
     hits = await asyncio.to_thread(
@@ -170,13 +204,13 @@ async def _retrieve_vector_only(
         limit=TOP_K,
     )
     elapsed = (time.monotonic() - t0) * 1000
-    return [h.content for h in hits], elapsed
+    return [_eval_chunk(hit) for hit in hits], elapsed
 
 
 async def _retrieve_bm25_only(
     chunks_corpus: list[Any],
     question: str,
-) -> tuple[list[str], float]:
+) -> tuple[list[EvalRetrievedChunk], float]:
     t0 = time.monotonic()
     documents = [c.content for c in chunks_corpus]
     ranks = await asyncio.to_thread(
@@ -186,7 +220,7 @@ async def _retrieve_bm25_only(
         limit=TOP_K,
     )
     elapsed = (time.monotonic() - t0) * 1000
-    return [chunks_corpus[r.index].content for r in ranks[:TOP_K]], elapsed
+    return [_eval_chunk(chunks_corpus[rank.index]) for rank in ranks[:TOP_K]], elapsed
 
 
 async def _retrieve_hybrid(
@@ -196,7 +230,7 @@ async def _retrieve_hybrid(
     question: str,
     owner_user_id: str,
     knowledge_base_ids: list[str],
-) -> tuple[list[str], float]:
+) -> tuple[list[EvalRetrievedChunk], float]:
     t0 = time.monotonic()
     vectors = await embedding_model.aembed_documents([question])
     vector_hits_task = asyncio.to_thread(
@@ -225,7 +259,7 @@ async def _retrieve_hybrid(
     chunk_by_id.update({c.chunk_id: c for c in bm25_chunks})
 
     elapsed = (time.monotonic() - t0) * 1000
-    return [chunk_by_id[f.key].content for f in fused if f.key in chunk_by_id], elapsed
+    return [_eval_chunk(chunk_by_id[f.key]) for f in fused if f.key in chunk_by_id], elapsed
 
 
 async def _retrieve_hybrid_rerank(
@@ -236,7 +270,7 @@ async def _retrieve_hybrid_rerank(
     question: str,
     owner_user_id: str,
     knowledge_base_ids: list[str],
-) -> tuple[list[str], float]:
+) -> tuple[list[EvalRetrievedChunk], float]:
     t0 = time.monotonic()
 
     # Same hybrid retrieval first
@@ -266,9 +300,8 @@ async def _retrieve_hybrid_rerank(
     chunk_by_id: dict[str, Any] = {h.chunk_id: h for h in vector_hits}
     chunk_by_id.update({c.chunk_id: c for c in bm25_chunks})
 
-    fused_docs = [
-        chunk_by_id[f.key].content for f in fused if f.key in chunk_by_id
-    ]
+    fused_chunks = [chunk_by_id[f.key] for f in fused if f.key in chunk_by_id]
+    fused_docs = [chunk.content for chunk in fused_chunks]
 
     # Then rerank with SiliconFlow BGE
     try:
@@ -277,13 +310,13 @@ async def _retrieve_hybrid_rerank(
             documents=fused_docs,
             top_n=TOP_K,
         )
-        reranked = [fused_docs[r.index] for r in rankings]
+        reranked = [fused_chunks[rank.index] for rank in rankings]
     except Exception:
         # Fallback: RRF order
-        reranked = fused_docs[:TOP_K]
+        reranked = fused_chunks[:TOP_K]
 
     elapsed = (time.monotonic() - t0) * 1000
-    return reranked, elapsed
+    return [_eval_chunk(chunk) for chunk in reranked], elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +363,7 @@ async def _generate_answer(
 
 
 # ---------------------------------------------------------------------------
-# deterministic metrics (no LLM — token-overlap relevance)
+# deterministic metrics (no LLM — manual labels)
 # ---------------------------------------------------------------------------
 
 
@@ -364,23 +397,32 @@ def _token_overlap(text_a: str, text_b: str) -> float:
     return len(tokens_a & tokens_b) / min(len(tokens_a), len(tokens_b))
 
 
-def _relevance_labels(
-    contexts: list[str],
-    ground_truth: str,
+def _manual_relevance_labels(
+    chunks: Sequence[EvalRetrievedChunk],
+    qa: Mapping[str, Any],
 ) -> list[int]:
-    """Binary relevance: 1 if token overlap with ground_truth exceeds threshold."""
+    """Assign 0/1/2 chunk relevance from human-authored sources and atomic facts."""
+    expected = _expected_sources(qa)
+    facts = cast(list[str], qa["atomic_facts"])
     labels: list[int] = []
-    for ctx in contexts:
-        overlap = _token_overlap(ctx, ground_truth)
-        labels.append(1 if overlap >= GOLD_RELEVANCE_TOKEN_OVERLAP_THRESHOLD else 0)
+    for chunk in chunks:
+        if chunk.source not in expected:
+            labels.append(0)
+        elif any(
+            _normalise_evidence(fact) in _normalise_evidence(chunk.content)
+            for fact in facts
+        ):
+            labels.append(2)
+        else:
+            labels.append(1)
     return labels
 
 
-def _mrr(contexts: list[str], ground_truth: str) -> float:
-    """Mean Reciprocal Rank — position of first relevant document."""
-    labels = _relevance_labels(contexts, ground_truth)
+def _mrr(chunks: Sequence[EvalRetrievedChunk], qa: Mapping[str, Any]) -> float:
+    """Mean Reciprocal Rank based on manually labelled source relevance."""
+    labels = _manual_relevance_labels(chunks, qa)
     for rank, rel in enumerate(labels, start=1):
-        if rel == 1:
+        if rel > 0:
             return 1.0 / rank
     return 0.0
 
@@ -392,24 +434,30 @@ def _dcg_at_k(labels: list[int], k: int) -> float:
     return sum(scores)
 
 
-def _ndcg_at_k(contexts: list[str], ground_truth: str, k: int = 5) -> float:
-    """NDCG@k — normalized by ideal ranking (all relevant docs first)."""
-    labels = _relevance_labels(contexts, ground_truth)
+def _ndcg_at_k(
+    chunks: Sequence[EvalRetrievedChunk], qa: Mapping[str, Any], k: int = 5
+) -> float:
+    """NDCG@k — normalized by manually labelled source relevance."""
+    labels = _manual_relevance_labels(chunks, qa)
     actual = _dcg_at_k(labels, k)
     ideal_labels = sorted(labels, reverse=True)
     ideal = _dcg_at_k(ideal_labels, k)
     return actual / ideal if ideal > 0 else 0.0
 
 
-def _recall_at_k(contexts: list[str], ground_truth: str, k: int = 5) -> float:
-    """Fraction of ground-truth tokens covered by retrieved contexts (jieba)."""
-    gt_tokens = _tokenize(ground_truth)
-    if not gt_tokens:
+def _atomic_fact_recall_at_k(
+    chunks: Sequence[EvalRetrievedChunk], qa: Mapping[str, Any], k: int = 5
+) -> float:
+    """Recall of human-authored atomic facts found in the retrieved evidence."""
+    facts = cast(list[str], qa["atomic_facts"])
+    if not facts:
         return 0.0
-    ctx_tokens: set[str] = set()
-    for ctx in contexts[:k]:
-        ctx_tokens.update(_tokenize(ctx))
-    return len(gt_tokens & ctx_tokens) / len(gt_tokens)
+    evidence = _normalise_evidence("\n".join(chunk.content for chunk in chunks[:k]))
+    return sum(_normalise_evidence(fact) in evidence for fact in facts) / len(facts)
+
+
+def _normalise_evidence(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -836,36 +884,46 @@ async def run_evaluation(
             try:
                 if strategy_id == "cag-kvcache" and cag_state:
                     # CAG: local model generates directly from KV Cache (no retrieval)
-                    contexts, answer, gen_sec = await asyncio.to_thread(
+                    cag_contexts, answer, gen_sec = await asyncio.to_thread(
                         cag_state["answer_fn"],
                         cag_state["kv"],
                         cag_state["kv_len"],
                         question,
                     )
+                    contexts = [
+                        EvalRetrievedChunk(content=context, source="cag", chunk_id=f"cag-{index}")
+                        for index, context in enumerate(cag_contexts)
+                    ]
                     retrieval_ms = 0.0
                     generation_ms = gen_sec * 1000
                     cache_load_ms = (cag_state["cache_setup_sec"] * 1000) / max(len(qa_pairs), 1)
                 else:
                     # Standard: retrieve → generate
                     contexts, retrieval_ms = await retriever(question)
-                    answer, generation_ms = await _generate_answer(chat_model, question, contexts)
+                    answer, generation_ms = await _generate_answer(
+                        chat_model, question, [chunk.content for chunk in contexts]
+                    )
             except Exception as exc:
                 print(f"      [WARN] Failed: {exc}")
                 contexts, retrieval_ms, answer, generation_ms = [], 0.0, "", 0.0
 
             # Deterministic metrics
-            mrr_val = _mrr(contexts, ground_truth)
-            ndcg_val = _ndcg_at_k(contexts, ground_truth, k=TOP_K)
-            recall_val = _recall_at_k(contexts, ground_truth, k=TOP_K)
+            mrr_val = _mrr(contexts, qa)
+            ndcg_val = _ndcg_at_k(contexts, qa, k=TOP_K)
+            recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
 
             # LLM scores
             llm_scores = await _score_one_question(
-                deepseek_judge, question, answer, contexts, ground_truth
+                deepseek_judge,
+                question,
+                answer,
+                [chunk.content for chunk in contexts],
+                ground_truth,
             )
 
             # Error classification
             error_cat = _classify_error(
-                contexts,
+                [chunk.content for chunk in contexts],
                 ground_truth,
                 llm_scores["context_precision"],
                 llm_scores["context_recall"],
@@ -877,13 +935,16 @@ async def run_evaluation(
                 "question": question,
                 "groundTruth": ground_truth[:500],
                 "answer": answer[:1000],
-                "contexts": [c[:300] for c in contexts],
+                "contexts": [
+                    {"chunkId": chunk.chunk_id, "source": chunk.source, "content": chunk.content[:300]}
+                    for chunk in contexts
+                ],
                 "contextCount": len(contexts),
                 "scores": {
                     **llm_scores,
                     "mrr": round(mrr_val, 4),
                     "ndcg_at_5": round(ndcg_val, 4),
-                    "recall_at_5": round(recall_val, 4),
+                    "atomic_fact_recall_at_5": round(recall_val, 4),
                 },
                 "latency": {
                     "retrievalMs": round(retrieval_ms, 1),
@@ -903,7 +964,7 @@ async def run_evaluation(
             gen_display = f" gen={generation_ms:.0f}ms" if generation_ms > 0 else ""
             print(
                 f"      CP={cp:.2f} CP@3={cp3:.2f} CR={cr:.2f} AR={ar:.2f} F={fai:.2f} "
-                f"MRR={mrr_val:.2f} NDCG={ndcg_val:.2f} R@5={recall_val:.2f} "
+                f"MRR={mrr_val:.2f} NDCG={ndcg_val:.2f} FactR@5={recall_val:.2f} "
                 f"| ret={retrieval_ms:.0f}ms{gen_display} | [{error_cat}]"
             )
 
@@ -913,7 +974,7 @@ async def run_evaluation(
         agg: dict[str, float] = {}
         for key in ("context_precision", "context_precision_at_3", "faithfulness",
                      "answer_relevancy", "context_recall",
-                     "mrr", "ndcg_at_5", "recall_at_5"):
+                     "mrr", "ndcg_at_5", "atomic_fact_recall_at_5"):
             vals = [
                 cast(dict[str, object], cast(dict[str, object], i["scores"]))[key]
                 for i in run.per_item
@@ -950,7 +1011,10 @@ async def run_evaluation(
         print(f"\n  ── {strategy_id} 汇总 ──")
         print(f"  CP={agg['context_precision']:.4f}  CP@3={agg.get('context_precision_at_3', 0):.4f}  "
               f"CR={agg['context_recall']:.4f}  AR={agg['answer_relevancy']:.4f}  F={agg['faithfulness']:.4f}")
-        print(f"  MRR={agg['mrr']:.4f}  NDCG@5={agg['ndcg_at_5']:.4f}  R@5={agg['recall_at_5']:.4f}")
+        print(
+            f"  MRR={agg['mrr']:.4f}  NDCG@5={agg['ndcg_at_5']:.4f}  "
+            f"FactR@5={agg['atomic_fact_recall_at_5']:.4f}"
+        )
         print(f"  Latency: retrieval {agg['avg_retrieval_ms']:.0f}ms  generation {agg['avg_generation_ms']:.0f}ms")
         print(f"  Errors: {dict(error_dist)}")
 
@@ -1105,7 +1169,7 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
         ("answer_relevancy", "Answer Relevancy", True),
         ("mrr", "MRR", False),
         ("ndcg_at_5", "NDCG@5", False),
-        ("recall_at_5", "Recall@5", False),
+        ("atomic_fact_recall_at_5", "Atomic Fact R@5", False),
         ("avg_retrieval_ms", "Retrieval (ms)", False),
         ("avg_generation_ms", "Generation (ms)", False),
         ("avg_cache_load_ms", "Cache Load (ms)", False),
@@ -1167,7 +1231,7 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     print(bottom)
     print()
     print("  Clean-room = 直接把标准答案作为上下文喂给 LLM，衡量生成质量上界")
-    print("  LLM 指标 (CP/CR/F/AR) 用 DeepSeek 评分，确定性指标 (MRR/NDCG/R@5) 用 jieba token overlap 计算")
+    print("  LLM 指标 (CP/CR/F/AR) 用 DeepSeek 评分；MRR/NDCG 使用人工来源相关性，FactR@5 使用人工原子事实")
     print("  CP@3 = 仅取 top-3 chunk 的 Context Precision（减少 small-KB 场景下噪音 chunk 的惩罚）")
     print()
 
@@ -1282,16 +1346,32 @@ class TestRagasEvaluation:
             "excerpt": "evidence"
         }
 
-    def test_mrr_first_relevant(self) -> None:
-        ctxs = ["nginx 502 error upstream failed", "redis memory config", "irrelevant doc"]
-        gt = "nginx 502 bad gateway upstream connection failed"
-        mrr = _mrr(ctxs, gt)
-        assert mrr == 1.0, f"First doc should be relevant, got MRR={mrr}"
+    def test_mrr_uses_manual_source_label(self) -> None:
+        chunks = [
+            EvalRetrievedChunk("irrelevant", "其他文档", "chunk-1"),
+            EvalRetrievedChunk("still irrelevant", "服务拓扑", "chunk-2"),
+        ]
+        mrr = _mrr(chunks, {"reference": "服务拓扑", "atomic_facts": []})
+        assert mrr == 0.5, f"Second manually labelled source should score 0.5, got {mrr}"
+
+    def test_atomic_fact_recall_uses_human_authored_facts(self) -> None:
+        chunks = [
+            EvalRetrievedChunk("P99 延迟阈值为超过 500ms。", "团队告警响应规范", "chunk-1")
+        ]
+        recall = _atomic_fact_recall_at_k(
+            chunks,
+            {"atomic_facts": ["P99 延迟阈值为超过 500ms", "错误率阈值为超过 0.5%"]},
+        )
+        assert recall == 0.5
 
     def test_mrr_none_relevant(self) -> None:
-        ctxs = ["redis cluster config", "mysql slow query tuning"]
-        gt = "nginx upstream connection timeout"
-        mrr = _mrr(ctxs, gt)
+        chunks = [
+            EvalRetrievedChunk("redis cluster config", "服务拓扑", "chunk-1"),
+            EvalRetrievedChunk("mysql slow query", "历史故障复盘", "chunk-2"),
+        ]
+        mrr = _mrr(
+            chunks, {"reference": "团队告警响应规范", "atomic_facts": []}
+        )
         assert mrr == 0.0, f"No relevant docs, MRR should be 0, got {mrr}"
 
     def test_error_classification_data_gap(self) -> None:
