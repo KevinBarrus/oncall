@@ -10,6 +10,7 @@ title: OpenSpec 变更
 - [cache-llm-readiness-probes](/changes/active/cache-llm-readiness-probes/)
 - [describe-qualified-mcp-tools](/changes/active/describe-qualified-mcp-tools/)
 - [isolate-mcp-connection-failures](/changes/active/isolate-mcp-connection-failures/)
+- [limit-manual-memory-compaction](/changes/active/limit-manual-memory-compaction/)
 - [observe-chat-tool-degradation](/changes/active/observe-chat-tool-degradation/)
 - [reuse-mcp-sessions](/changes/active/reuse-mcp-sessions/)
 

@@ -178,6 +178,44 @@ async def test_chat_session_access_is_scoped_to_current_user(
     assert owner_detail.json()["data"]["session"]["id"] == session["id"]
 
 
+@pytest.mark.asyncio
+async def test_manual_memory_operations_return_owner_scoped_background_jobs(
+    migrated_database_url: str,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(database_url=migrated_database_url))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        owner = await _register(client, "memory-owner@example.com", "Memory Owner")
+        other = await _register(client, "memory-other@example.com", "Memory Other")
+        owner_headers = _auth_headers(owner["accessToken"])
+        session = (
+            await client.post("/chat/sessions", headers=owner_headers, json={})
+        ).json()["data"]
+
+        mode_response = await client.put(
+            f"/chat/sessions/{session['id']}/memory",
+            headers=owner_headers,
+            json={"mode": "manual"},
+        )
+        compact_response = await client.post(
+            f"/chat/sessions/{session['id']}/memory:compact",
+            headers=owner_headers,
+        )
+        forbidden = await client.get(
+            f"/background-jobs/{mode_response.json()['data']['job']['id']}",
+            headers=_auth_headers(other["accessToken"]),
+        )
+
+    mode_payload = mode_response.json()["data"]
+    compact_payload = compact_response.json()["data"]
+    assert mode_response.status_code == 200
+    assert mode_payload["session"]["memory"]["mode"] == "manual"
+    assert mode_payload["job"]["kind"] == "chat_memory_compaction"
+    assert mode_payload["job"]["resourceId"] == session["id"]
+    assert compact_response.status_code == 200
+    assert compact_payload["job"]["id"] != mode_payload["job"]["id"]
+    assert forbidden.status_code == 403
+
+
 async def _register(client: httpx.AsyncClient, email: str, display_name: str) -> dict[str, Any]:
     response = await client.post(
         "/auth/register",

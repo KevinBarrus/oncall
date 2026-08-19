@@ -272,46 +272,12 @@ class ChatMemoryService:
             memory_mode=mode,
         )
         current = updated or session
-        if mode == "manual":
-            return await self.compact(
-                owner_user_id=owner_user_id,
-                session=current,
-                history=history,
-                system_prompt=system_prompt,
-            )
         return await self.refresh_usage(
             owner_user_id=owner_user_id,
             session=current,
             history=history,
             system_prompt=system_prompt,
         )
-
-    async def compact(
-        self,
-        *,
-        owner_user_id: str,
-        session: ChatSessionRecord,
-        history: list[ChatMessageRecord],
-        system_prompt: str,
-    ) -> ChatSessionRecord:
-        uncompressed = history[session.compacted_message_count :]
-        if not uncompressed:
-            return await self.refresh_usage(
-                owner_user_id=owner_user_id,
-                session=session,
-                history=history,
-                system_prompt=system_prompt,
-            )
-        current = session
-        while uncompressed:
-            current = await self.compact_once(
-                owner_user_id=owner_user_id,
-                session=current,
-                history=history,
-                system_prompt=system_prompt,
-            )
-            uncompressed = history[current.compacted_message_count :]
-        return current
 
     async def _compact_messages(
         self,

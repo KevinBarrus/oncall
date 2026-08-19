@@ -388,8 +388,8 @@ async def test_context_threshold_and_manual_mode_are_session_scoped(
     assert threshold_result.session.memory_mode == "context_70_percent"
     assert threshold_result.session.compacted_message_count == 1
     assert manual_result.memory_mode == "manual"
-    assert manual_result.compacted_message_count == 1
-    assert len(provider.model.inputs) == 2
+    assert manual_result.compacted_message_count == 0
+    assert len(provider.model.inputs) == 1
 
 
 @pytest.mark.asyncio

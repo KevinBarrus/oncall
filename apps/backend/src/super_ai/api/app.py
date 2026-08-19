@@ -1231,8 +1231,16 @@ def create_app(
             history=history,
             system_prompt=prompt,
         )
+        job = (
+            await _schedule_chat_memory_compaction(
+                request, owner_user_id=user.id, session_id=session.id
+            )
+            if body.mode == "manual"
+            else None
+        )
         return success_response(
-            request, _chat_session_payload(updated, service.context_window_tokens)
+            request,
+            _chat_memory_compaction_payload(updated, service.context_window_tokens, job),
         )
 
     @app.post("/chat/sessions/{session_id}/memory:compact")
@@ -1245,18 +1253,21 @@ def create_app(
         session = await repositories.chat.get_session(owner_user_id=user.id, session_id=session_id)
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
-        history = await repositories.chat.list_messages(
-            owner_user_id=user.id, session_id=session_id
-        )
         service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
-        updated = await service.compact(
+        updated = await service.refresh_usage(
             owner_user_id=user.id,
             session=session,
-            history=history,
+            history=await repositories.chat.list_messages(
+                owner_user_id=user.id, session_id=session_id
+            ),
             system_prompt=prompt,
         )
+        job = await _schedule_chat_memory_compaction(
+            request, owner_user_id=user.id, session_id=session.id
+        )
         return success_response(
-            request, _chat_session_payload(updated, service.context_window_tokens)
+            request,
+            _chat_memory_compaction_payload(updated, service.context_window_tokens, job),
         )
 
     @app.post("/chat/sessions/{session_id}/messages")
@@ -2207,8 +2218,8 @@ def _chat_memory_service(request: Request) -> ChatMemoryService:
 
 async def _schedule_chat_memory_compaction(
     request: Request, *, owner_user_id: str, session_id: str
-) -> None:
-    await _background_job_repository(request).enqueue(
+) -> BackgroundJobRecord:
+    job = await _background_job_repository(request).enqueue(
         owner_user_id=owner_user_id,
         job_id=f"job_{uuid4().hex}",
         kind="chat_memory_compaction",
@@ -2219,6 +2230,7 @@ async def _schedule_chat_memory_compaction(
         timeout_seconds=60,
     )
     await _background_job_runtime(request).start()
+    return job
 
 
 async def _chat_memory_context(
@@ -2372,6 +2384,19 @@ def _chat_session_payload(
         "updatedAt": record.updated_at.isoformat(),
         "memory": memory_payload(record, context_window_tokens),
     }
+
+
+def _chat_memory_compaction_payload(
+    session: ChatSessionRecord,
+    context_window_tokens: int,
+    job: BackgroundJobRecord | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "session": _chat_session_payload(session, context_window_tokens),
+    }
+    if job is not None:
+        payload["job"] = _background_job_payload(job)
+    return payload
 
 
 def _chat_message_payload(message: ChatMessageRecord) -> dict[str, object]:

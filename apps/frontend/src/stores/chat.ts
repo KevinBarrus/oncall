@@ -267,7 +267,7 @@ export const useChatStore = defineStore("chat", () => {
       isUpdatingMemory.value = true;
       try {
         const updated = await client.updateMemoryMode(sessionId, mode);
-        upsertSession(updated);
+        upsertSession(updated.session);
       } catch (error) {
         reportError(error);
         throw error;
@@ -281,7 +281,7 @@ export const useChatStore = defineStore("chat", () => {
       isUpdatingMemory.value = true;
       try {
         const updated = await client.compactMemory(sessionId);
-        upsertSession(updated);
+        upsertSession(updated.session);
       } catch (error) {
         reportError(error);
         throw error;

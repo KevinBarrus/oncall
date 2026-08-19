@@ -373,8 +373,12 @@ function fakeClient(
     }),
     listSessions: async () => ({ items: [session()] }),
     listToolCallAudits: async () => ({ items: [audit()] }),
-    updateMemoryMode: async (_sessionId, mode) => session({ memory: { ...session().memory, mode } }),
-    compactMemory: async () => session({ memory: { ...session().memory, contextUsagePercent: 0.2 } }),
+    updateMemoryMode: async (_sessionId, mode) => ({
+      session: session({ memory: { ...session().memory, mode } })
+    }),
+    compactMemory: async () => ({
+      session: session({ memory: { ...session().memory, contextUsagePercent: 0.2 } })
+    }),
     streamMessage: async function* (): AsyncIterable<SseEvent> {
       for (const event of options.streamed ?? []) {
         if (event.type === "complete" && event.channel === "chat") {

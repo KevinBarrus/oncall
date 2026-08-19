@@ -371,7 +371,7 @@ export const OPENAPI_CONTRACT = {
           content: jsonContent("#/components/schemas/UpdateChatMemoryRequest")
         },
         responses: {
-          "200": okResponse("#/components/schemas/ChatSessionApiResponse"),
+          "200": okResponse("#/components/schemas/ChatMemoryCompactionApiResponse"),
           ...protectedErrorResponses
         }
       }
@@ -383,7 +383,7 @@ export const OPENAPI_CONTRACT = {
         tags: ["chat"],
         security: bearerSecurity,
         responses: {
-          "200": okResponse("#/components/schemas/ChatSessionApiResponse"),
+          "200": okResponse("#/components/schemas/ChatMemoryCompactionApiResponse"),
           ...protectedErrorResponses
         }
       }
@@ -1258,6 +1258,22 @@ export const OPENAPI_CONTRACT = {
         properties: {
           ok: { enum: ["true"] },
           data: { $ref: "#/components/schemas/ChatSessionResponse" },
+          meta: { $ref: "#/components/schemas/ApiResponseMeta" }
+        }
+      },
+      ChatMemoryCompactionApiResponse: {
+        type: "object",
+        required: ["ok", "data", "meta"],
+        properties: {
+          ok: { enum: ["true"] },
+          data: {
+            type: "object",
+            required: ["session"],
+            properties: {
+              session: { $ref: "#/components/schemas/ChatSessionResponse" },
+              job: { $ref: "#/components/schemas/BackgroundJob" }
+            }
+          },
           meta: { $ref: "#/components/schemas/ApiResponseMeta" }
         }
       },

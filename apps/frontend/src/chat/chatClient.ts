@@ -1,5 +1,6 @@
 import type {
   ChatSessionDetailResponse,
+  ChatMemoryCompactionResponse,
   ChatSessionListResponse,
   ChatSessionSummary,
   ChatToolCallAuditListResponse,
@@ -29,8 +30,8 @@ export interface ChatClient {
   getSession(sessionId: string): Promise<ChatSessionDetailResponse>;
   listSessions(): Promise<ChatSessionListResponse>;
   listToolCallAudits(sessionId: string): Promise<ChatToolCallAuditListResponse>;
-  updateMemoryMode(sessionId: string, mode: ChatMemoryMode): Promise<ChatSessionSummary>;
-  compactMemory(sessionId: string): Promise<ChatSessionSummary>;
+  updateMemoryMode(sessionId: string, mode: ChatMemoryMode): Promise<ChatMemoryCompactionResponse>;
+  compactMemory(sessionId: string): Promise<ChatMemoryCompactionResponse>;
   getConfiguration?(): Promise<ChatAssemblyConfigurationResponse>;
   updateConfiguration?(request: UpdateChatAssemblyConfigurationRequest): Promise<ChatAssemblyConfigurationResponse>;
   createPrompt?(request: CreateChatPromptRequest): Promise<ChatPromptResponse>;
@@ -72,12 +73,12 @@ export function createChatClient(options: CreateChatClientOptions = {}): ChatCli
     listToolCallAudits: (sessionId) =>
       api.request<ChatToolCallAuditListResponse>(`/chat/sessions/${sessionId}/tool-call-audits`),
     updateMemoryMode: (sessionId, mode) =>
-      api.request<ChatSessionSummary>(`/chat/sessions/${sessionId}/memory`, {
+      api.request<ChatMemoryCompactionResponse>(`/chat/sessions/${sessionId}/memory`, {
         body: JSON.stringify({ mode }),
         method: "PUT"
       }),
     compactMemory: (sessionId) =>
-      api.request<ChatSessionSummary>(`/chat/sessions/${sessionId}/memory:compact`, {
+      api.request<ChatMemoryCompactionResponse>(`/chat/sessions/${sessionId}/memory:compact`, {
         method: "POST"
       }),
     getConfiguration: () => api.request<ChatAssemblyConfigurationResponse>("/chat/configuration"),

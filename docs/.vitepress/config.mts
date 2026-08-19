@@ -6,6 +6,7 @@ const activeItems = [
   { text: "cache-llm-readiness-probes", link: "/changes/active/cache-llm-readiness-probes/" },
   { text: "describe-qualified-mcp-tools", link: "/changes/active/describe-qualified-mcp-tools/" },
   { text: "isolate-mcp-connection-failures", link: "/changes/active/isolate-mcp-connection-failures/" },
+  { text: "limit-manual-memory-compaction", link: "/changes/active/limit-manual-memory-compaction/" },
   { text: "observe-chat-tool-degradation", link: "/changes/active/observe-chat-tool-degradation/" },
   { text: "reuse-mcp-sessions", link: "/changes/active/reuse-mcp-sessions/" },
 ];

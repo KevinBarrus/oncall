@@ -1,4 +1,5 @@
 import type { ReferenceSourceSseEvent } from "./sse";
+import type { BackgroundJob } from "./background-jobs";
 
 export type ChatMessageRole = "user" | "assistant";
 
@@ -66,6 +67,11 @@ export interface ChatSessionListResponse {
 export interface ChatSessionDetailResponse {
   readonly session: ChatSessionSummary;
   readonly messages: readonly ChatMessage[];
+}
+
+export interface ChatMemoryCompactionResponse {
+  readonly session: ChatSessionSummary;
+  readonly job?: BackgroundJob;
 }
 
 export interface ToolCallAudit {
