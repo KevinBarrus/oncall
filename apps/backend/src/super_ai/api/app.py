@@ -1530,7 +1530,7 @@ def create_app(
         else:
             severity = service = ""
         alert_context = f"{severity}:{service}"
-        # record manual feedback for every SOP used
+        # Replays return current SOP states without reapplying the manual rating.
         service = _sop_belief_service(request)
         updated = await service.record_feedback(
             owner_user_id=user.id,

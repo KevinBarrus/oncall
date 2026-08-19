@@ -13,12 +13,12 @@ from alembic import command
 from alembic.config import Config
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
-from super_ai.aiops.sop_belief import SopBeliefService
 from super_ai.aiops.diagnostics import (
     _representative_log_records,
     _tool_result_summary,
     _validated_plan_with_sop_ids,
 )
+from super_ai.aiops.sop_belief import SopBeliefService
 from super_ai.api.app import AiopsDiagnosticRunner, create_app
 from super_ai.llm import LlmProvider, RerankResult
 from super_ai.mcp_client import LocalMcpClient, McpClientError, McpToolDefinition
@@ -418,9 +418,10 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
     ]
     assert [state.observations for state in belief_states] == [1]
     assert [state.document_id for state in belief_states] == ["document_sop"]
-    assert [(item.document_id, item.attribution_stage, item.evidence_strength) for item in belief_evidence] == [
-        ("document_sop", "plan", "planned")
-    ]
+    assert [
+        (item.document_id, item.attribution_stage, item.evidence_strength)
+        for item in belief_evidence
+    ] == [("document_sop", "plan", "planned")]
     assert other_owner_exposures == []
     assert other_owner_states == []
     assert other_owner_evidence == []

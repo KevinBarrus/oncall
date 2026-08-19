@@ -268,34 +268,16 @@ class SopBeliefService:
         context: str = "",
     ) -> list[SopBeliefState]:
         outcome: Literal["success", "failure"] = "success" if rating == "helpful" else "failure"
-        evidence_records = await self._repository.list_evidence_for_task(
+        result = await self._repository.record_feedback_once(
             owner_user_id=owner_user_id,
             tenant_id=tenant_id,
             task_id=task_id,
+            rating=rating,
+            context=context,
+            outcome=outcome,
+            failure_mode="manual_not_helpful" if outcome == "failure" else "",
         )
-        updated: list[SopBeliefState] = []
-        seen: set[tuple[str, str]] = set()
-        for record in evidence_records:
-            key = (record.document_id, record.document_version)
-            if key in seen:
-                continue
-            seen.add(key)
-            updated.append(
-                await self.record(
-                    owner_user_id=owner_user_id,
-                    tenant_id=tenant_id,
-                    evidence=DiagnosticEvidence(
-                        task_id=task_id,
-                        sop_id=record.document_id,
-                        document_version=record.document_version,
-                        context=context or record.context,
-                        outcome=outcome,
-                        source="manual",
-                        failure_mode=record.failure_mode if outcome == "failure" else "",
-                    ),
-                )
-            )
-        return updated
+        return [_belief_state_from_record(state) for state in result.states]
 
     async def top_sops(
         self,
