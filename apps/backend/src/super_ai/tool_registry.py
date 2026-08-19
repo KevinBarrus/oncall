@@ -8,7 +8,7 @@ from typing import Any, Protocol, cast
 
 from langchain_core.tools import StructuredTool
 
-from super_ai.mcp_client import LocalMcpClient
+from super_ai.mcp_client import LocalMcpClient, McpToolDefinition
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[object]]
 
@@ -113,15 +113,20 @@ class ToolRegistry:
                 if qualified
                 else definition.name
             )
+            description = (
+                _qualified_mcp_description(definition.description, definition, public_name)
+                if qualified
+                else definition.description
+            )
             wrapped = self._mcp_langchain_tool(
-                public_name, definition.description, definition.input_schema
+                public_name, description, definition.input_schema
             ) if with_langchain_tools else None
             self._register(
                 ToolDefinition(
                     tool_id=f"mcp:{definition.server_name}:{definition.name}",
                     name=public_name,
                     native_name=definition.name,
-                    description=definition.description,
+                    description=description,
                     input_schema=definition.input_schema,
                     provider_type="mcp",
                     provider_id=definition.server_name,
@@ -175,6 +180,17 @@ class ToolRegistry:
 
 def _qualified_name(provider_id: str, native_name: str) -> str:
     return f"mcp__{_safe_name(provider_id)}__{_safe_name(native_name)}"
+
+
+def _qualified_mcp_description(
+    description: str, definition: McpToolDefinition, public_name: str
+) -> str:
+    return (
+        f"{description}\n\n"
+        f"MCP provider: {definition.server_name}\n"
+        f"Original MCP tool name: {definition.name}\n"
+        f"Qualified Agent tool name: {public_name}"
+    )
 
 
 def _safe_name(value: str) -> str:

@@ -113,6 +113,8 @@
 
 - 重名工具继续使用 provider-qualified name 保证执行路由正确。
 - 在 description 中补充 provider/server、原始工具名和限定调用名，并增加重名工具选择测试。
+- 已完成：仅在 MCP 工具重名或与本地工具冲突时，为 Agent 可见 description 追加 provider、原始 MCP 工具名和限定 Agent 工具名；未冲突工具保持原描述。
+- 已补充：同名工具的 `ToolDefinition` 和 LangChain 包装均包含限定调用信息，并继续路由到对应 provider 的回归测试。
 
 ## 问题19的解决方案：让关键降级可观测
 

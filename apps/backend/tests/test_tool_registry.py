@@ -36,9 +36,20 @@ async def test_registry_routes_same_mcp_tool_name_to_provider() -> None:
         "mcp__server_a__search_log",
         "mcp__server_b__search_log",
     ]
+    assert [definition.description for definition in registry.definitions()] == [
+        "Search logs A\n\n"
+        "MCP provider: server_a\n"
+        "Original MCP tool name: search_log\n"
+        "Qualified Agent tool name: mcp__server_a__search_log",
+        "Search logs B\n\n"
+        "MCP provider: server_b\n"
+        "Original MCP tool name: search_log\n"
+        "Qualified Agent tool name: mcp__server_b__search_log",
+    ]
     assert await registry.execute("mcp__server_a__search_log", {}) == "server_a"
     assert await registry.execute("mcp__server_b__search_log", {}) == "server_b"
     tools = registry.langchain_tools()
+    assert tools[0].description.endswith("mcp__server_a__search_log")
     assert await tools[0].ainvoke({}) == "server_a"
     assert client.calls == [
         ("server_a", "search_log", {}),
