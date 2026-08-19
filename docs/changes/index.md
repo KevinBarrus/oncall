@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [cache-llm-readiness-probes](/changes/active/cache-llm-readiness-probes/)
 - [describe-qualified-mcp-tools](/changes/active/describe-qualified-mcp-tools/)
 - [isolate-mcp-connection-failures](/changes/active/isolate-mcp-connection-failures/)
 - [observe-chat-tool-degradation](/changes/active/observe-chat-tool-degradation/)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+import super_ai.llm.provider as provider_module
 from super_ai.llm import (
     EmbeddingModel,
     LlmConfigurationError,
@@ -25,6 +27,12 @@ class FakeChatModel:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+class YieldingFakeChatModel(FakeChatModel):
+    async def ainvoke(self, input: object) -> object:
+        await asyncio.sleep(0)
+        return await super().ainvoke(input)
 
 
 class FakeEmbeddingModel:
@@ -221,6 +229,35 @@ async def test_readiness_succeeds_without_exposing_secret() -> None:
     assert result.latency_ms >= 0
     assert config.api_key not in repr(result)
     assert fake_model.inputs
+
+
+@pytest.mark.asyncio
+async def test_readiness_caches_results_and_reprobes_after_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_llm_provider_config()
+    fake_model = FakeChatModel(response="ready")
+    provider = QwenOpenAIProvider(config=config, model_factory=lambda _: fake_model)
+
+    assert (await provider.check_readiness()).ok is True
+    assert (await provider.check_readiness()).ok is True
+    assert fake_model.inputs == ["Return exactly: ready"]
+
+    monkeypatch.setattr(provider_module, "LLM_READINESS_CACHE_TTL_SECONDS", 0)
+    assert (await provider.check_readiness()).ok is True
+    assert fake_model.inputs == ["Return exactly: ready", "Return exactly: ready"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_readiness_checks_share_one_model_probe() -> None:
+    config = load_llm_provider_config()
+    fake_model = YieldingFakeChatModel(response="ready")
+    provider = QwenOpenAIProvider(config=config, model_factory=lambda _: fake_model)
+
+    results = await asyncio.gather(*(provider.check_readiness() for _ in range(3)))
+
+    assert all(result.ok for result in results)
+    assert fake_model.inputs == ["Return exactly: ready"]
 
 
 @pytest.mark.asyncio

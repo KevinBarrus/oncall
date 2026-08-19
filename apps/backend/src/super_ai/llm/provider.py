@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from super_ai.llm.config import LlmProviderConfig, load_llm_provider_config
 from super_ai.llm.rerank import QwenVlRerankModel, RerankModel, RerankResult
 
 QWEN_EMBEDDING_BATCH_SIZE = 10
+LLM_READINESS_CACHE_TTL_SECONDS = 30
 
 
 class ChatModel(Protocol):
@@ -83,6 +85,9 @@ class QwenOpenAIProvider:
         self._model_factory = model_factory or _create_chat_openai_model
         self._embedding_factory = embedding_factory or _create_openai_embedding_model
         self._rerank_factory = rerank_factory or _create_qwen_rerank_model
+        self._readiness_lock = asyncio.Lock()
+        self._readiness_result: LlmReadinessResult | None = None
+        self._readiness_checked_at = 0.0
 
     @property
     def config(self) -> LlmProviderConfig:
@@ -111,6 +116,24 @@ class QwenOpenAIProvider:
 
     async def check_readiness(self) -> LlmReadinessResult:
         """Run a minimal async model request and return a secret-safe result."""
+        cached = self._cached_readiness()
+        if cached is not None:
+            return cached
+        async with self._readiness_lock:
+            cached = self._cached_readiness()
+            if cached is not None:
+                return cached
+            result = await self._probe_readiness()
+            self._readiness_result = result
+            self._readiness_checked_at = monotonic()
+            return result
+
+    def _cached_readiness(self) -> LlmReadinessResult | None:
+        if monotonic() - self._readiness_checked_at >= LLM_READINESS_CACHE_TTL_SECONDS:
+            return None
+        return self._readiness_result
+
+    async def _probe_readiness(self) -> LlmReadinessResult:
         started_at = monotonic()
         try:
             model = self.create_chat_model()
