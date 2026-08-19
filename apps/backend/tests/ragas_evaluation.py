@@ -19,6 +19,7 @@ Usage:
     uv run python tests/ragas_evaluation.py
     uv run python tests/ragas_evaluation.py --limit 5
     uv run python tests/ragas_evaluation.py --strategy hybrid+rerank
+    uv run python tests/ragas_evaluation.py --e2e --limit 5
     uv run python tests/ragas_evaluation.py --report     # print cached report
 """
 
@@ -84,6 +85,7 @@ ALL_STRATEGIES: tuple[StrategyId, ...] = (
 
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+E2E_API_BASE_URL = os.environ.get("RAGAS_API_BASE_URL", "http://127.0.0.1:8000")
 TOP_K = 5
 MAX_CONTEXT_CHARS_PER_QUESTION = 6000
 GOLD_RELEVANCE_TOKEN_OVERLAP_THRESHOLD = 0.15  # jieba 分词后阈值（中文+英文混合）
@@ -580,6 +582,127 @@ async def _clean_room_baseline(
 
 
 # ---------------------------------------------------------------------------
+# end-to-end chat evaluation
+# ---------------------------------------------------------------------------
+
+
+def _parse_sse(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for block in text.strip().split("\n\n"):
+        fields = dict(
+            line.split(": ", 1)
+            for line in block.splitlines()
+            if ": " in line
+        )
+        if "event" in fields and "data" in fields:
+            events.append({"event": fields["event"], "data": json.loads(fields["data"])})
+    return events
+
+
+async def _discover_eval_credentials(
+    client: httpx.AsyncClient,
+) -> tuple[str, str] | None:
+    response = await client.post(
+        "/auth/login",
+        json={"email": "ragas-eval@agent-py.local", "password": "ragas-test-123456"},
+    )
+    if response.status_code != 200:
+        response = await client.post(
+            "/auth/register",
+            json={
+                "email": "ragas-eval@agent-py.local",
+                "displayName": "RAGAS Eval",
+                "password": "ragas-test-123456",
+            },
+        )
+    if response.status_code not in {200, 201}:
+        return None
+    data = cast(dict[str, object], response.json()["data"])
+    token = cast(str, data["accessToken"])
+    user = cast(dict[str, object], data["user"])
+    return token, cast(str, user["id"])
+
+
+async def _end_to_end_chat_evaluation(
+    qa_pairs: list[dict[str, Any]],
+    judge_model: Any,
+) -> dict[str, object]:
+    """Evaluate the production HTTP/SSE chat path, including Agent execution."""
+    results: list[dict[str, object]] = []
+    scores_agg: dict[str, list[float]] = defaultdict(list)
+    started = time.monotonic()
+
+    async with httpx.AsyncClient(base_url=E2E_API_BASE_URL, timeout=180) as client:
+        credentials = await _discover_eval_credentials(client)
+        if credentials is None:
+            return {"status": "unavailable", "error": "evaluation account unavailable"}
+        token, owner_id = credentials
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for qa in qa_pairs:
+            question = cast(str, qa["question"])
+            ground_truth = cast(str, qa["ground_truth"])
+            item_started = time.monotonic()
+            session_response = await client.post("/chat/sessions", headers=headers, json={})
+            session_response.raise_for_status()
+            session = cast(dict[str, object], session_response.json()["data"])
+            session_id = cast(str, session["id"])
+            response = await client.post(
+                f"/chat/sessions/{session_id}/messages:stream",
+                headers=headers,
+                json={"content": question},
+            )
+            response.raise_for_status()
+            events = _parse_sse(response.text)
+
+            answer = "".join(
+                cast(str, cast(dict[str, object], event["data"])["delta"])
+                for event in events
+                if event["event"] == "content.delta"
+            )
+            contexts = [
+                cast(str, reference["excerpt"])
+                for event in events
+                if event["event"] == "reference.source"
+                and isinstance(cast(dict[str, object], event["data"]).get("reference"), dict)
+                for reference in [
+                    cast(dict[str, object], cast(dict[str, object], event["data"])["reference"])
+                ]
+                if isinstance(reference.get("excerpt"), str)
+            ]
+            llm_scores = await _score_one_question(
+                judge_model, question, answer, contexts, ground_truth
+            )
+            for key, value in llm_scores.items():
+                scores_agg[key].append(value)
+            results.append(
+                {
+                    "question": question,
+                    "groundTruth": ground_truth[:500],
+                    "answer": answer[:1000],
+                    "contexts": [context[:300] for context in contexts],
+                    "contextCount": len(contexts),
+                    "scores": llm_scores,
+                    "sseEventCount": len(events),
+                    "toolCallCount": sum(event["event"] == "tool.call" for event in events),
+                    "completed": any(event["event"] == "complete" for event in events),
+                    "latencyMs": round((time.monotonic() - item_started) * 1000, 1),
+                }
+            )
+
+    return {
+        "status": "completed",
+        "ownerUserId": owner_id,
+        "durationMs": round((time.monotonic() - started) * 1000, 1),
+        "averages": {
+            key: round(sum(values) / len(values), 4) if values else None
+            for key, values in scores_agg.items()
+        },
+        "perItem": results,
+    }
+
+
+# ---------------------------------------------------------------------------
 # main evaluation pipeline
 # ---------------------------------------------------------------------------
 
@@ -594,6 +717,7 @@ class EvalRun:
 async def run_evaluation(
     limit: int | None = None,
     strategies: Sequence[StrategyId] = ALL_STRATEGIES,
+    e2e: bool = False,
 ) -> dict[str, object]:
     print("[0/6] Loading API keys & data ...")
     siliconflow_key = _require_env("SILICONFLOW_API_KEY")
@@ -830,6 +954,14 @@ async def run_evaluation(
     print(f"  AR={clean_room['averages']['answer_relevancy']:.4f}  "
           f"F={clean_room['averages']['faithfulness']:.4f}")
 
+    end_to_end: dict[str, object] | None = None
+    if e2e:
+        print(f"\n{'='*60}")
+        print("  End-to-end chat evaluation (HTTP → SSE → Agent)")
+        print(f"{'='*60}")
+        end_to_end = await _end_to_end_chat_evaluation(qa_pairs, deepseek_judge)
+        print(f"  status={end_to_end['status']}")
+
     # -------------------------------------------------------------------
     # persist results
     # -------------------------------------------------------------------
@@ -846,6 +978,7 @@ async def run_evaluation(
             "qaCount": len(qa_pairs),
             "judgeModel": DEEPSEEK_CHAT_MODEL,
             "rerankModel": "BAAI/bge-reranker-v2-m3",
+            "e2e": e2e,
         },
         "strategies": {
             sid: {
@@ -855,6 +988,7 @@ async def run_evaluation(
             for sid, run in eval_runs.items()
         },
         "cleanRoom": clean_room,
+        **({"endToEnd": end_to_end} if end_to_end is not None else {}),
         "lowScoreSamples": _low_score_samples(eval_runs, top_n=5),
     }
 
@@ -1069,6 +1203,11 @@ def main() -> None:
         help="Run a single strategy instead of all 4",
     )
     parser.add_argument("--report", action="store_true", help="Print report from cached results")
+    parser.add_argument(
+        "--e2e",
+        action="store_true",
+        help="Also evaluate the real HTTP/SSE chat Agent path",
+    )
     args = parser.parse_args()
 
     if args.report:
@@ -1081,7 +1220,7 @@ def main() -> None:
         return
 
     strategies = (cast(StrategyId, args.strategy),) if args.strategy else ALL_STRATEGIES
-    payload = asyncio.run(run_evaluation(args.limit, strategies=strategies))
+    payload = asyncio.run(run_evaluation(args.limit, strategies=strategies, e2e=args.e2e))
     _print_comparison_report(payload)
 
 
@@ -1110,6 +1249,21 @@ class TestRagasEvaluation:
         assert _parse_score("0.85") == 0.85
         assert _parse_score("blah 0.42 blah") == 0.42
         assert _parse_score("nothing") == 0.5
+
+    def test_parse_sse_keeps_agent_and_reference_events(self) -> None:
+        events = _parse_sse(
+            'event: tool.call\ndata: {"data": 1}\n\n'
+            'event: reference.source\ndata: {"reference": {"excerpt": "evidence"}}\n\n'
+            'event: complete\ndata: {"ok": true}'
+        )
+        assert [event["event"] for event in events] == [
+            "tool.call",
+            "reference.source",
+            "complete",
+        ]
+        assert cast(dict[str, object], events[1]["data"])["reference"] == {
+            "excerpt": "evidence"
+        }
 
     def test_mrr_first_relevant(self) -> None:
         ctxs = ["nginx 502 error upstream failed", "redis memory config", "irrelevant doc"]
