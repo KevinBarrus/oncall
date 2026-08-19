@@ -51,6 +51,7 @@ class AiopsDiagnosticState(TypedDict, total=False):
     no_sop_matched: bool
     plan: list[JsonDict]
     plan_origin: str
+    planned_sop_document_ids: list[str]
     plan_index: int
     continue_execution: bool
     execution_failed: bool
@@ -396,7 +397,7 @@ class AiopsDiagnosticService:
             ),
             "SearchLog",
         )
-        plan, plan_origin = await self._create_plan(
+        plan, plan_origin, planned_sop_document_ids = await self._create_plan(
             query=query,
             alert=_json_dict(state.get("alert")),
             sop_hits=sop_hits,
@@ -417,6 +418,7 @@ class AiopsDiagnosticService:
             "sopHits": sop_hits,
             "plan": plan,
             "planOrigin": plan_origin,
+            "sopDocumentIds": planned_sop_document_ids,
             "retrievalError": retrieval_error,
         }
         planner_step = await self._create_step(
@@ -463,6 +465,7 @@ class AiopsDiagnosticService:
             "no_sop_matched": no_sop_matched,
             "plan": plan,
             "plan_origin": plan_origin,
+            "planned_sop_document_ids": planned_sop_document_ids,
             "evidence_ids": persisted_evidence_ids,
             "events": events,
         }
@@ -892,29 +895,39 @@ class AiopsDiagnosticService:
         no_sop_matched: bool,
         available_tools: Sequence[str],
         search_tool_name: str = "SearchLog",
-    ) -> tuple[list[JsonDict], str]:
+    ) -> tuple[list[JsonDict], str, list[str]]:
         generic_plan = [self._generic_search_log_step(query, search_tool_name)]
         prompt = (
-            "Return JSON only with a `steps` array. Each step has `id`, `tool`, `arguments`, and "
-            "`purpose`. Plan a bounded AIOps investigation using only these tools: "
+            "Return JSON only with `steps` and `sopDocumentIds` arrays. "
+            "Each step has `id`, `tool`, "
+            "`arguments`, and `purpose`. `sopDocumentIds` contains only SOP document IDs actually "
+            "used by the plan. Plan a bounded AIOps investigation using only these tools: "
             f"{json.dumps(list(available_tools))}. User query: {query}. Alert: "
             f"{json.dumps(alert)}. SOP evidence: {json.dumps(list(sop_hits))}. "
             f"No SOP matched: {str(no_sop_matched).lower()}. Prefer SearchLog for CLS evidence."
         )
         try:
             response = await self._llm_provider.create_chat_model().ainvoke(prompt)
-            plan = _validated_plan(_model_text(response), available_tools)
+            plan, planned_sop_document_ids = _validated_plan_with_sop_ids(
+                _model_text(response),
+                available_tools,
+                [str(hit.get("documentId") or "") for hit in sop_hits],
+            )
         except Exception:
-            plan = []
+            plan, planned_sop_document_ids = [], []
         if not plan:
-            return generic_plan, "generic"
+            return generic_plan, "generic", []
         normalized_plan = [
             self._normalized_search_log_step(step, query, search_tool_name)
             if step.get("tool") == search_tool_name
             else step
             for step in plan
         ]
-        return normalized_plan, "SOP-backed" if sop_hits else "generic"
+        return (
+            normalized_plan,
+            "SOP-backed" if planned_sop_document_ids else "generic",
+            planned_sop_document_ids,
+        )
 
     def _generic_search_log_step(self, query: str, tool_name: str = "SearchLog") -> JsonDict:
         now_ms = int(_now().timestamp() * 1000)
@@ -1029,19 +1042,23 @@ class AiopsDiagnosticService:
         )
 
 
-def _validated_plan(text: str, available_tools: Sequence[str]) -> list[JsonDict]:
+def _validated_plan_with_sop_ids(
+    text: str,
+    available_tools: Sequence[str],
+    allowed_sop_document_ids: Sequence[str],
+) -> tuple[list[JsonDict], list[str]]:
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if match is None:
-        return []
+        return [], []
     try:
         parsed = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return []
+        return [], []
     if not isinstance(parsed, Mapping):
-        return []
+        return [], []
     raw_steps = parsed.get("steps")
     if not isinstance(raw_steps, list):
-        return []
+        return [], []
     allowed_tools = set(available_tools) | {"knowledge_retrieval"}
     steps: list[JsonDict] = []
     for index, raw_step in enumerate(raw_steps):
@@ -1061,7 +1078,14 @@ def _validated_plan(text: str, available_tools: Sequence[str]) -> list[JsonDict]
                 "purpose": str(raw_step.get("purpose") or "Collect diagnostic evidence."),
             }
         )
-    return steps
+    allowed_ids = set(allowed_sop_document_ids)
+    raw_sop_document_ids = parsed.get("sopDocumentIds")
+    planned_sop_document_ids = (
+        [item for item in raw_sop_document_ids if isinstance(item, str) and item in allowed_ids]
+        if isinstance(raw_sop_document_ids, list)
+        else []
+    )
+    return steps, list(dict.fromkeys(planned_sop_document_ids))
 
 
 def _model_text(response: object) -> str:

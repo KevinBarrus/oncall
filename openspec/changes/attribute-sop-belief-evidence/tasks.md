@@ -5,7 +5,7 @@
 
 ## 2. 诊断归因链路
 
-- [ ] 2.1 扩展 Planner 输出和验证器，接收并校验 `sopDocumentIds`。
+- [x] 2.1 扩展 Planner 输出和验证器，接收并校验 `sopDocumentIds`。
 - [ ] 2.2 持久化所有候选 SOP 的曝光记录，但不更新后验状态。
 - [ ] 2.3 仅依据已验证的计划 SOP 引用写入结果 evidence，并将归因元数据传给 belief service。
 

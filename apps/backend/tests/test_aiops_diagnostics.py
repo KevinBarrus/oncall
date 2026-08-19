@@ -16,7 +16,7 @@ from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
 from super_ai.aiops.diagnostics import (
     _representative_log_records,
     _tool_result_summary,
-    _validated_plan,
+    _validated_plan_with_sop_ids,
 )
 from super_ai.api.app import AiopsDiagnosticRunner, create_app
 from super_ai.llm import LlmProvider, RerankResult
@@ -677,7 +677,7 @@ def _sop_hit(owner_user_id: str) -> VectorSearchResult:
 
 
 def test_validated_plan_keeps_multiple_allowed_tools() -> None:
-    plan = _validated_plan(
+    plan, sop_document_ids = _validated_plan_with_sop_ids(
         json.dumps(
             {
                 "steps": [
@@ -687,9 +687,27 @@ def test_validated_plan_keeps_multiple_allowed_tools() -> None:
             }
         ),
         ["SearchLog", "QueryMetric"],
+        [],
     )
 
     assert [step["tool"] for step in plan] == ["SearchLog", "QueryMetric"]
+    assert sop_document_ids == []
+
+
+def test_validated_plan_keeps_only_retrieved_sop_document_ids() -> None:
+    plan, sop_document_ids = _validated_plan_with_sop_ids(
+        json.dumps(
+            {
+                "steps": [{"tool": "SearchLog", "arguments": {}, "purpose": "查日志"}],
+                "sopDocumentIds": ["document-a", "unknown", "document-a"],
+            }
+        ),
+        ["SearchLog"],
+        ["document-a", "document-b"],
+    )
+
+    assert len(plan) == 1
+    assert sop_document_ids == ["document-a"]
 
 
 def test_representative_log_records_keeps_tail_and_severe_entries() -> None:
