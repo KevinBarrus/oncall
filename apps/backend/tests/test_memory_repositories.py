@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -758,6 +759,57 @@ async def test_sop_belief_feedback_submission_applies_one_rating_once(
         ("auto", "legacy", "unknown"),
         ("manual", "feedback", "manual"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sop_belief_feedback_submission_is_concurrent_and_owner_scoped(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repository = SQLiteSopBeliefRepository(create_memory_session_factory(engine))
+        await repository.record(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            document_id="doc-1",
+            document_version="hash-v1",
+            context="critical:checkout",
+            outcome="success",
+            source="auto",
+            failure_mode="",
+            total_tokens=120,
+            turns=2,
+            elapsed_seconds=1.5,
+        )
+        first, second = await asyncio.gather(
+            *[
+                repository.record_feedback_once(
+                    owner_user_id="user-a",
+                    tenant_id="user-a",
+                    task_id="task-1",
+                    rating="helpful",
+                    context="critical:checkout",
+                    outcome="success",
+                    failure_mode="",
+                )
+                for _ in range(2)
+            ]
+        )
+        evidence = await repository.list_evidence_for_task(
+            owner_user_id="user-a", tenant_id="user-a", task_id="task-1"
+        )
+        other_owner = await repository.list_evidence_for_task(
+            owner_user_id="user-b", tenant_id="user-b", task_id="task-1"
+        )
+    finally:
+        await engine.dispose()
+
+    assert sum(result.applied for result in (first, second)) == 1
+    assert [item.observations for item in first.states] == [2]
+    assert [item.observations for item in second.states] == [2]
+    assert [item.source for item in evidence] == ["auto", "manual"]
+    assert other_owner == []
 
 
 def test_repository_boundary_exposes_protocols_and_records_only() -> None:

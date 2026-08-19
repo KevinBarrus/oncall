@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -14,9 +15,9 @@ from alembic.config import Config
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
 from super_ai.aiops.diagnostics import (
-    _representative_log_records,
-    _tool_result_summary,
-    _validated_plan_with_sop_ids,
+    _representative_log_records,  # pyright: ignore[reportPrivateUsage]
+    _tool_result_summary,  # pyright: ignore[reportPrivateUsage]
+    _validated_plan_with_sop_ids,  # pyright: ignore[reportPrivateUsage]
 )
 from super_ai.aiops.sop_belief import SopBeliefService
 from super_ai.api.app import AiopsDiagnosticRunner, create_app
@@ -613,17 +614,49 @@ async def test_diagnostic_feedback_updates_only_the_owner_sop_belief(
             headers=_auth_headers(owner["accessToken"]),
             json={"rating": "helpful"},
         )
+        replayed = await client.post(
+            f"/aiops/diagnostics/{task.id}/feedback",
+            headers=_auth_headers(owner["accessToken"]),
+            json={"rating": "helpful"},
+        )
+        different_rating = await client.post(
+            f"/aiops/diagnostics/{task.id}/feedback",
+            headers=_auth_headers(owner["accessToken"]),
+            json={"rating": "not_helpful"},
+        )
         denied = await client.post(
             f"/aiops/diagnostics/{task.id}/feedback",
             headers=_auth_headers(other["accessToken"]),
             json={"rating": "helpful"},
+        )
+        owner_evidence = await repository.list_evidence_for_task(
+            owner_user_id=owner_id,
+            tenant_id=owner_id,
+            task_id=task.id,
+        )
+        other_evidence = await repository.list_evidence_for_task(
+            owner_user_id=str(other["user"]["id"]),
+            tenant_id=str(other["user"]["id"]),
+            task_id=task.id,
         )
 
     assert accepted.status_code == 200
     assert accepted.json()["data"]["updatedSops"] == [
         {"sopId": "sop-checkout", "successProbability": 0.8333, "observations": 2}
     ]
+    assert replayed.status_code == 200
+    assert replayed.json()["data"]["updatedSops"] == accepted.json()["data"]["updatedSops"]
+    assert different_rating.status_code == 200
+    assert different_rating.json()["data"]["updatedSops"] == [
+        {"sopId": "sop-checkout", "successProbability": 0.5556, "observations": 3}
+    ]
+    assert [(item.source, item.metadata.get("rating")) for item in owner_evidence] == [
+        ("auto", None),
+        ("manual", "helpful"),
+        ("manual", "not_helpful"),
+    ]
     assert denied.status_code == 404
+    assert other_evidence == []
 
 
 @pytest.mark.asyncio
@@ -793,7 +826,7 @@ def test_validated_plan_keeps_only_retrieved_sop_document_ids() -> None:
 
 
 def test_representative_log_records_keeps_tail_and_severe_entries() -> None:
-    records = [
+    records: list[dict[str, object]] = [
         {"message": f"info-{index}", "level": "INFO"}
         for index in range(12)
     ]
@@ -808,7 +841,7 @@ def test_representative_log_records_keeps_tail_and_severe_entries() -> None:
 
 
 def test_representative_log_records_clusters_repeated_messages() -> None:
-    records = [
+    records: list[dict[str, object]] = [
         {"message": f"timeout after {index}ms", "level": "WARN", "service": "api"}
         for index in range(20)
     ]
