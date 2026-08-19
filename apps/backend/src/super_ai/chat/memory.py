@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -54,6 +54,7 @@ class ChatRuntimeContextBudget:
     context_window_tokens: int
     used_tokens: int
     input_limit_tokens: int
+    llm_provider: LlmProvider | None
 
     @classmethod
     def create(
@@ -63,6 +64,7 @@ class ChatRuntimeContextBudget:
         memory_summary: str | None,
         messages: list[ChatMessageRecord],
         context_window_tokens: int,
+        llm_provider: LlmProvider | None = None,
     ) -> ChatRuntimeContextBudget:
         input_limit = int(
             context_window_tokens * RUNTIME_SAFETY_MARGIN_PERCENT / 100
@@ -73,17 +75,14 @@ class ChatRuntimeContextBudget:
                 system_prompt=system_prompt,
                 memory_summary=memory_summary,
                 messages=messages,
+                llm_provider=llm_provider,
             ),
             input_limit_tokens=max(1, input_limit),
+            llm_provider=llm_provider,
         )
 
     def add(self, value: object, *, role: str) -> None:
-        message: dict[str, object] = {"role": role, "content": _runtime_text(value)}
-        if role == "tool":
-            message["tool_call_id"] = "runtime-budget"
-        value_tokens = int(
-            count_tokens_approximately([message])
-        )
+        value_tokens = count_tokens(_runtime_text(value), llm_provider=self.llm_provider)
         if self.used_tokens + value_tokens > self.input_limit_tokens:
             raise ChatRuntimeContextLimitReached
         self.used_tokens += value_tokens
@@ -129,6 +128,7 @@ class ChatMemoryService:
             system_prompt=system_prompt,
             memory_summary=current.memory_summary,
             messages=candidate_messages,
+            llm_provider=self._llm_provider,
         )
         completed_turns = sum(message.role == "assistant" for message in uncompressed)
         should_compact = (
@@ -144,6 +144,7 @@ class ChatMemoryService:
                 system_prompt=system_prompt,
                 memory_summary=current.memory_summary,
                 context_window_tokens=self.context_window_tokens,
+                llm_provider=self._llm_provider,
             )
             current = await self._compact_messages(
                 owner_user_id=owner_user_id,
@@ -156,6 +157,7 @@ class ChatMemoryService:
                 system_prompt=system_prompt,
                 memory_summary=current.memory_summary,
                 messages=candidate_messages,
+                llm_provider=self._llm_provider,
             )
 
         if (
@@ -187,6 +189,7 @@ class ChatMemoryService:
             system_prompt=system_prompt,
             memory_summary=session.memory_summary,
             messages=history[session.compacted_message_count :],
+            llm_provider=self._llm_provider,
         )
         updated = await self._repositories.chat.update_memory_state(
             owner_user_id=owner_user_id,
@@ -247,6 +250,7 @@ class ChatMemoryService:
                 system_prompt=system_prompt,
                 memory_summary=current.memory_summary,
                 context_window_tokens=self.context_window_tokens,
+                llm_provider=self._llm_provider,
             )
             current = await self._compact_messages(
                 owner_user_id=owner_user_id,
@@ -296,6 +300,7 @@ class ChatMemoryService:
             system_prompt=system_prompt,
             memory_summary=summary,
             messages=[],
+            llm_provider=self._llm_provider,
         )
         updated = await self._repositories.chat.update_memory_state(
             owner_user_id=owner_user_id,
@@ -334,8 +339,8 @@ async def maybe_compress_tool_output(
     it is returned unchanged.  Otherwise the LLM is asked to produce a concise
     summary preserving all key facts.
     """
-    approx_tokens = len(text) // 4
-    if approx_tokens <= threshold_tokens:
+    token_count = count_tokens(text, llm_provider=llm_provider)
+    if token_count <= threshold_tokens:
         return text
 
     capped = _select_text_for_compression(
@@ -358,7 +363,7 @@ async def maybe_compress_tool_output(
 
     return (
         f"{capped[:4000]}\n\n"
-        f"[... 输出已按信号、首尾和时间线采样，原文约 {approx_tokens} tokens]"
+        f"[... 输出已按信号、首尾和时间线采样，原文约 {token_count} tokens]"
     )
 
 
@@ -371,7 +376,7 @@ async def maybe_compress_structured_tool_output(
 ) -> dict[str, object] | Mapping[str, object]:
     """Compress a large mapping without discarding its machine-readable envelope."""
     encoded = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
-    if len(encoded) // 4 <= threshold_tokens:
+    if count_tokens(encoded, llm_provider=llm_provider) <= threshold_tokens:
         return value
     compressed = await maybe_compress_tool_output(
         encoded,
@@ -475,6 +480,7 @@ def estimate_context_tokens(
     system_prompt: str,
     memory_summary: str | None,
     messages: list[ChatMessageRecord],
+    llm_provider: LlmProvider | None = None,
 ) -> int:
     values: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if memory_summary:
@@ -484,7 +490,28 @@ def estimate_context_tokens(
         for message in messages
         if message.role in {"user", "assistant"}
     )
-    return int(count_tokens_approximately(cast(Any, values)))
+    return sum(
+        count_tokens(item["content"], llm_provider=llm_provider)
+        for item in values
+    )
+
+
+def count_tokens(text: str, *, llm_provider: LlmProvider | None) -> int:
+    """Count with the configured model, falling back to a safe Unicode bound."""
+    counter = (
+        cast(Callable[[str], int] | None, getattr(llm_provider, "count_tokens", None))
+        if llm_provider
+        else None
+    )
+    if callable(counter):
+        try:
+            return max(0, int(counter(text)))
+        except Exception:
+            pass
+    approximate = int(
+        count_tokens_approximately(cast(Any, [{"role": "user", "content": text}]))
+    )
+    return max(approximate, len("".join(text.split())))
 
 
 def memory_payload(session: ChatSessionRecord, context_window_tokens: int) -> dict[str, object]:
@@ -607,6 +634,7 @@ def _select_messages_for_compaction(
     system_prompt: str,
     memory_summary: str | None,
     context_window_tokens: int,
+    llm_provider: LlmProvider | None = None,
 ) -> list[ChatMessageRecord]:
     """Select an old prefix that fits a separate summary-input budget."""
     budget = max(
@@ -620,6 +648,7 @@ def _select_messages_for_compaction(
             system_prompt=system_prompt,
             memory_summary=memory_summary,
             messages=candidate,
+            llm_provider=llm_provider,
         ) <= budget:
             selected.append(message)
             continue

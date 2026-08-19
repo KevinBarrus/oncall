@@ -16,9 +16,10 @@ from super_ai.chat.memory import (
     ChatMemoryService,
     ChatRuntimeContextBudget,
     ChatRuntimeContextLimitReached,
-    _memory_instruction,
-    _select_messages_for_compaction,
-    _validated_memory_document,
+    _memory_instruction,  # pyright: ignore[reportPrivateUsage]
+    _select_messages_for_compaction,  # pyright: ignore[reportPrivateUsage]
+    _validated_memory_document,  # pyright: ignore[reportPrivateUsage]
+    count_tokens,
     maybe_compress_structured_tool_output,
     maybe_compress_tool_output,
 )
@@ -65,6 +66,17 @@ class FakeProvider:
 
     def create_chat_model(self) -> FakeChatModel:
         return self.model
+
+
+class CountingProvider(FakeProvider):
+    def __init__(self, token_count: int) -> None:
+        super().__init__()
+        self.token_count = token_count
+        self.counted_texts: list[str] = []
+
+    def count_tokens(self, text: str) -> int:
+        self.counted_texts.append(text)
+        return self.token_count
 
 
 class FailingProvider:
@@ -133,6 +145,43 @@ def test_runtime_context_budget_reserves_output_and_rejects_overflow() -> None:
 
     with pytest.raises(ChatRuntimeContextLimitReached):
         budget.add("工具输出 " * 5_000, role="tool")
+
+
+def test_token_count_prefers_provider_and_conservatively_counts_chinese() -> None:
+    provider = CountingProvider(7)
+
+    assert count_tokens("中文日志", llm_provider=cast(LlmProvider, provider)) == 7
+    assert provider.counted_texts == ["中文日志"]
+    assert count_tokens("中文日志", llm_provider=None) >= len("中文日志")
+
+
+def test_runtime_context_budget_uses_provider_token_count() -> None:
+    provider = CountingProvider(3)
+    budget = ChatRuntimeContextBudget.create(
+        system_prompt="系统提示",
+        memory_summary=None,
+        messages=[],
+        context_window_tokens=5_000,
+        llm_provider=cast(LlmProvider, provider),
+    )
+
+    budget.add("工具输出", role="tool")
+
+    assert provider.counted_texts == ["系统提示", "工具输出"]
+
+
+@pytest.mark.asyncio
+async def test_tool_compression_uses_provider_token_count() -> None:
+    provider = CountingProvider(2_001)
+
+    compressed = await maybe_compress_tool_output(
+        "中文日志",
+        tool_name="SearchLog",
+        llm_provider=cast(LlmProvider, provider),
+    )
+
+    assert compressed.startswith("[compressed]")
+    assert provider.counted_texts == ["中文日志"]
 
 
 @pytest.mark.asyncio

@@ -610,6 +610,7 @@ class LangChainChatAgentRunner:
             memory_summary=None,
             messages=list(request.messages),
             context_window_tokens=request.context_window_tokens,
+            llm_provider=self._llm_provider,
         )
 
         async for raw_event in agent.astream_events(
@@ -657,10 +658,12 @@ def _wrap_tool_output_compression(
 
     async def _compressed_coroutine(**kwargs: object) -> object:
         result = await original_coro(**kwargs)
-        if isinstance(result, str) and len(result) // 4 > 2000:
+        if isinstance(result, str):
             compressed = await maybe_compress_tool_output(
                 result, tool_name=tool.name, llm_provider=llm_provider
             )
+            if compressed == result:
+                return result
             mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
             return {
                 "content": compressed.removeprefix("[compressed] "),

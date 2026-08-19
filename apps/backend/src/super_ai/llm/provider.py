@@ -93,6 +93,14 @@ class QwenOpenAIProvider:
         """Create a configured Qwen chat model."""
         return self._model_factory(self._config)
 
+    def count_tokens(self, text: str) -> int:
+        """Count text with the configured model when it exposes a tokenizer."""
+        model = self.create_chat_model()
+        counter = cast(Callable[[str], int] | None, getattr(model, "get_num_tokens", None))
+        if not callable(counter):
+            raise NotImplementedError("The configured chat model has no token counter.")
+        return int(counter(text))
+
     def create_embedding_model(self) -> EmbeddingModel:
         """Create a configured OpenAI-compatible embedding model."""
         return self._embedding_factory(self._config)
