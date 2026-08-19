@@ -29,7 +29,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from super_ai.aiops import AiopsDiagnosticService, DiagnosisCasePersistor
-from super_ai.aiops.sop_belief import SopBeliefRegistry
+from super_ai.aiops.sop_belief import SopBeliefService
 from super_ai.alerts import (
     ActiveAlert,
     ActiveAlertProvider,
@@ -1506,7 +1506,7 @@ def create_app(
             return error_response(
                 request,
                 "VALIDATION_INVALID_ARGUMENT",
-                detail="rating must be 'helpful' or 'not_helpful'",
+                message="rating must be 'helpful' or 'not_helpful'",
             )
         # verify ownership
         task = await _memory_repositories(request).diagnostics.get_task(
@@ -1516,8 +1516,8 @@ def create_app(
         if task is None:
             return error_response(
                 request,
-                "RESOURCE_NOT_FOUND",
-                detail="Diagnostic task not found.",
+                "BUSINESS_NOT_FOUND",
+                message="Diagnostic task not found.",
             )
         # extract context from the alert payload
         alert = task.input_payload.get("alert") or {}
@@ -1528,8 +1528,10 @@ def create_app(
             severity = service = ""
         alert_context = f"{severity}:{service}"
         # record manual feedback for every SOP used
-        registry = _sop_belief_registry(request)
-        updated = registry.record_feedback(
+        service = _sop_belief_service(request)
+        updated = await service.record_feedback(
+            owner_user_id=user.id,
+            tenant_id=user.id,
             task_id=diagnostic_id, rating=rating, context=alert_context
         )
         return success_response(
@@ -2222,18 +2224,21 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
                 repositories=_memory_repositories(request),
                 index_task_scheduler=_index_task_scheduler(request),
             ),
-            sop_belief_registry=_sop_belief_registry(request),
+            sop_belief_service=_sop_belief_service(request),
         )
         request.app.state.aiops_diagnostic_runner = runner
     return runner
 
 
-def _sop_belief_registry(request: Request) -> SopBeliefRegistry:
-    registry = getattr(request.app.state, "sop_belief_registry", None)
-    if registry is None:
-        registry = SopBeliefRegistry()
-        request.app.state.sop_belief_registry = registry
-    return registry
+def _sop_belief_service(request: Request) -> SopBeliefService:
+    service = getattr(request.app.state, "sop_belief_service", None)
+    if service is None:
+        repository = _memory_repositories(request).sop_beliefs
+        if repository is None:
+            raise RuntimeError("SOP belief repository is unavailable.")
+        service = SopBeliefService(repository)
+        request.app.state.sop_belief_service = service
+    return service
 
 
 def _document_indexing_service(request: Request) -> DocumentIndexingService:

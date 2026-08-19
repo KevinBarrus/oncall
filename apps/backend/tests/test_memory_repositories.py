@@ -27,6 +27,7 @@ from super_ai.memory.sqlite import (
     SQLiteChatMemoryRepository,
     SQLiteDiagnosticMemoryRepository,
     SQLiteKnowledgeDocumentRepository,
+    SQLiteSopBeliefRepository,
     SQLiteUserChatPromptRepository,
     SQLiteUserChatSkillRepository,
     create_sqlite_memory_repositories,
@@ -587,6 +588,81 @@ async def test_document_index_task_repository_tracks_status_failure_and_retry(
     assert cross_tenant is None
 
 
+@pytest.mark.asyncio
+async def test_sop_belief_repository_scopes_versions_and_records_evidence(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repository = SQLiteSopBeliefRepository(create_memory_session_factory(engine))
+        first = await repository.record(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            document_id="doc-1",
+            document_version="hash-v1",
+            context="critical:checkout",
+            outcome="success",
+            source="auto",
+            failure_mode="",
+            total_tokens=120,
+            turns=2,
+            elapsed_seconds=1.5,
+        )
+        updated = await repository.record(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            document_id="doc-1",
+            document_version="hash-v1",
+            context="critical:checkout",
+            outcome="failure",
+            source="manual",
+            failure_mode="timeout",
+            total_tokens=60,
+            turns=1,
+            elapsed_seconds=0.5,
+            metadata={"rating": "not_helpful"},
+        )
+        other_version = await repository.record(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-2",
+            document_id="doc-1",
+            document_version="hash-v2",
+            context="warning:checkout",
+            outcome="failure",
+            source="auto",
+            failure_mode="stale_sop",
+            total_tokens=10,
+            turns=1,
+            elapsed_seconds=0.1,
+        )
+        evidence = await repository.list_evidence_for_task(
+            owner_user_id="user-a", tenant_id="user-a", task_id="task-1"
+        )
+        cross_owner = await repository.list_states(
+            owner_user_id="user-b", tenant_id="user-b", document_versions={"doc-1": "hash-v1"}
+        )
+        cross_tenant = await repository.list_states(
+            owner_user_id="user-a", tenant_id="tenant-b", document_versions={"doc-1": "hash-v1"}
+        )
+    finally:
+        await engine.dispose()
+
+    assert first.observations == 1
+    assert updated.alpha == 2.0
+    assert updated.beta == 4.0
+    assert updated.observations == 2
+    assert updated.failure_modes == {"timeout": 1}
+    assert updated.contexts == {"critical:checkout": 2}
+    assert [item.source for item in evidence] == ["auto", "manual"]
+    assert evidence[1].metadata == {"rating": "not_helpful"}
+    assert other_version.observations == 1
+    assert cross_owner == []
+    assert cross_tenant == []
+
+
 def test_repository_boundary_exposes_protocols_and_records_only() -> None:
     assert inspect.isclass(ChatMemoryRepository)
     assert all(
@@ -634,6 +710,7 @@ async def test_sqlite_repository_bundle_can_be_injected(migrated_database_url: s
     assert isinstance(repositories.diagnostics, SQLiteDiagnosticMemoryRepository)
     assert isinstance(repositories.chat_prompts, SQLiteUserChatPromptRepository)
     assert isinstance(repositories.chat_skills, SQLiteUserChatSkillRepository)
+    assert isinstance(repositories.sop_beliefs, SQLiteSopBeliefRepository)
 
 
 @pytest.fixture

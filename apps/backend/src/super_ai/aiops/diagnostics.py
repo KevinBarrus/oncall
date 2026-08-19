@@ -17,7 +17,7 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 
 from super_ai.aiops.cases import DiagnosisCasePersistor
-from super_ai.aiops.sop_belief import DiagnosticEvidence, SopBeliefRegistry
+from super_ai.aiops.sop_belief import DiagnosticEvidence, SopBeliefService
 from super_ai.error_catalog import ERROR_DEFINITIONS
 from super_ai.llm import LlmProvider
 from super_ai.mcp_client import LocalMcpClient, McpClientError
@@ -86,7 +86,7 @@ class AiopsDiagnosticService:
         cls_region: str,
         cls_topic_id: str,
         case_persistor: DiagnosisCasePersistor | None = None,
-        sop_belief_registry: SopBeliefRegistry | None = None,
+        sop_belief_service: SopBeliefService | None = None,
     ) -> None:
         self._repositories = repositories
         self._llm_provider = llm_provider
@@ -98,7 +98,7 @@ class AiopsDiagnosticService:
         self._cls_region = cls_region
         self._cls_topic_id = cls_topic_id
         self._case_persistor = case_persistor
-        self._sop_registry = sop_belief_registry
+        self._sop_belief_service = sop_belief_service
 
     async def stream(
         self,
@@ -272,17 +272,42 @@ class AiopsDiagnosticService:
         if retrieval_result is not None:
             sop_hits = [_sop_hit_payload(hit) for hit in retrieval_result.results]
 
+            document_versions: dict[str, str] = {}
+            for payload in sop_hits:
+                document_id = str(payload.get("documentId") or "")
+                knowledge_base_id = str(payload.get("knowledgeBaseId") or "")
+                if not document_id or not knowledge_base_id or document_id in document_versions:
+                    continue
+                document = await self._repositories.documents.get_document(
+                    owner_user_id=owner_user_id,
+                    knowledge_base_id=knowledge_base_id,
+                    document_id=document_id,
+                )
+                if document is not None:
+                    document_versions[document_id] = document.content_hash
+            for payload in sop_hits:
+                document_version = document_versions.get(str(payload.get("documentId") or ""))
+                if document_version is not None:
+                    payload["documentVersion"] = document_version
+
             # -- belief-weighted SOP re-ranking (Bayesian SOP Evolution) --
-            if self._sop_registry is not None and len(sop_hits) >= 2:
+            if (
+                self._sop_belief_service is not None
+                and len(sop_hits) >= 2
+                and len(document_versions)
+                == len({str(hit.get("documentId") or "") for hit in sop_hits})
+            ):
                 retrieval_scores = {
-                    payload["documentId"]: float(payload.get("score", 0.0))
+                    str(payload["documentId"]): float(payload.get("score", 0.0))
                     for payload in sop_hits
                 }
-                reranked_ids = self._sop_registry.top_sops(
-                    [payload["documentId"] for payload in sop_hits],
+                reranked_ids = await self._sop_belief_service.top_sops(
+                    owner_user_id=owner_user_id,
+                    tenant_id=owner_user_id,
+                    document_versions=document_versions,
                     retrieval_scores=retrieval_scores,
                 )
-                id_to_hit = {payload["documentId"]: payload for payload in sop_hits}
+                id_to_hit = {str(payload["documentId"]): payload for payload in sop_hits}
                 reranked = [id_to_hit[sid] for sid in reranked_ids if sid in id_to_hit]
                 if reranked != sop_hits:
                     sop_hits = reranked
@@ -779,27 +804,31 @@ class AiopsDiagnosticService:
                 updated_task = refreshed_task
 
         # -- record Bayesian evidence for every SOP used in this diagnostic --
-        if self._sop_registry is not None:
-            sop_document_ids = [
-                str(hit.get("documentId") or "")
-                for hit in cast(list[JsonDict], state.get("sop_hits") or [])
-            ]
+        if self._sop_belief_service is not None:
+            sop_hits = cast(list[JsonDict], state.get("sop_hits") or [])
             alert_payload = _json_dict(state.get("alert"))
             alert_context = _evidence_context(alert_payload)
             plan_len = len(cast(list[JsonDict], state.get("plan") or []))
-            for sop_id in sop_document_ids:
-                if not sop_id:
+            for hit in sop_hits:
+                sop_id = str(hit.get("documentId") or "")
+                document_version = str(hit.get("documentVersion") or "")
+                if not sop_id or not document_version:
                     continue
                 evidence = DiagnosticEvidence(
                     task_id=task_id,
                     sop_id=sop_id,
+                    document_version=document_version,
                     context=alert_context,
                     outcome="success" if status == "succeeded" else "failure",
                     failure_mode="execution_failed" if status == "failed" else "",
                     turns=plan_len,
                 )
                 try:
-                    self._sop_registry.record(evidence)
+                    await self._sop_belief_service.record(
+                        owner_user_id=owner_user_id,
+                        tenant_id=owner_user_id,
+                        evidence=evidence,
+                    )
                 except Exception:
                     pass  # belief persistence must never break the diagnostic flow
 

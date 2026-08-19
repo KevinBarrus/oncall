@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -175,6 +176,44 @@ class DiagnosticEvidenceRecord:
     source: str
     summary: str
     payload: JsonDict
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SopBeliefStateRecord:
+    id: str
+    owner_user_id: str
+    tenant_id: str
+    document_id: str
+    document_version: str
+    alpha: float
+    beta: float
+    failure_modes: dict[str, int]
+    contexts: dict[str, int]
+    observations: int
+    mean_tokens: float
+    mean_turns: float
+    mean_elapsed_seconds: float
+    last_updated: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SopBeliefEvidenceRecord:
+    id: str
+    state_id: str
+    owner_user_id: str
+    tenant_id: str
+    task_id: str
+    document_id: str
+    document_version: str
+    context: str
+    outcome: str
+    source: str
+    failure_mode: str
+    total_tokens: int
+    turns: int
+    elapsed_seconds: float
+    metadata: JsonDict
     created_at: datetime
 
 
@@ -1171,6 +1210,51 @@ class McpConnectionRepository(Protocol):
     async def delete(self, *, owner_user_id: str, connection_id: str) -> bool: ...
 
 
+class SopBeliefRepository(Protocol):
+    """Repository contract for tenant-scoped SOP posterior state."""
+
+    async def record(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        document_id: str,
+        document_version: str,
+        context: str,
+        outcome: str,
+        source: str,
+        failure_mode: str,
+        total_tokens: int,
+        turns: int,
+        elapsed_seconds: float,
+        metadata: JsonDict | None = None,
+        created_at: datetime | None = None,
+    ) -> SopBeliefStateRecord:
+        """Atomically append evidence and update its scoped posterior state."""
+        ...
+
+    async def list_states(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        document_versions: Mapping[str, str],
+    ) -> list[SopBeliefStateRecord]:
+        """List states for the requested document versions within one scope."""
+        ...
+
+    async def list_evidence_for_task(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+    ) -> list[SopBeliefEvidenceRecord]:
+        """List the scoped evidence that was recorded for one diagnostic task."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryRepositories:
     """Repository bundle for dependency injection."""
@@ -1186,3 +1270,4 @@ class MemoryRepositories:
     background_jobs: BackgroundJobRepository | None = None
     feedback: UserFeedbackRepository | None = None
     mcp_connections: McpConnectionRepository | None = None
+    sop_beliefs: SopBeliefRepository | None = None

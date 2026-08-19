@@ -494,6 +494,57 @@ async def test_aiops_stream_requires_task_owner(migrated_database_url: str) -> N
 
 
 @pytest.mark.asyncio
+async def test_diagnostic_feedback_updates_only_the_owner_sop_belief(
+    migrated_database_url: str,
+) -> None:
+    app = create_app(database_url=migrated_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        owner = await _register(client, "belief-owner@example.com")
+        other = await _register(client, "belief-other@example.com")
+        owner_id = str(owner["user"]["id"])
+        task = await app.state.memory_repositories.diagnostics.create_task(
+            owner_user_id=owner_id,
+            task_id="belief-task",
+            status="succeeded",
+            query="Investigate checkout timeout",
+            input_payload={"alert": {"severity": "critical", "service": "checkout"}},
+        )
+        repository = app.state.memory_repositories.sop_beliefs
+        assert repository is not None
+        await repository.record(
+            owner_user_id=owner_id,
+            tenant_id=owner_id,
+            task_id=task.id,
+            document_id="sop-checkout",
+            document_version="hash-v1",
+            context="critical:checkout",
+            outcome="success",
+            source="auto",
+            failure_mode="",
+            total_tokens=0,
+            turns=1,
+            elapsed_seconds=0.0,
+        )
+        accepted = await client.post(
+            f"/aiops/diagnostics/{task.id}/feedback",
+            headers=_auth_headers(owner["accessToken"]),
+            json={"rating": "helpful"},
+        )
+        denied = await client.post(
+            f"/aiops/diagnostics/{task.id}/feedback",
+            headers=_auth_headers(other["accessToken"]),
+            json={"rating": "helpful"},
+        )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["updatedSops"] == [
+        {"sopId": "sop-checkout", "successProbability": 0.8333, "observations": 2}
+    ]
+    assert denied.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_diagnosis_case_api_lists_only_owner_cases_and_denies_direct_access(
     migrated_database_url: str,
 ) -> None:

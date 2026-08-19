@@ -1,28 +1,22 @@
-"""Bayesian SOP belief registry for AIOps diagnostics.
+"""Bayesian SOP belief service for AIOps diagnostics.
 
 Design inspired by Bayesian-Agent (Wu et al., 2026, arXiv:2606.08348):
 - Each SOP document is a hypothesis about diagnostic success.
 - Each verified diagnostic trajectory becomes evidence for updating that belief.
 - SOP selection at retrieval time can incorporate posterior success probability.
 
-Storage: ``~/.oncall/sop_beliefs.json`` — a single JSON file, no database schema changes.
 """
 
 from __future__ import annotations
 
-import json
-import math
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal
 
-_DEFAULT_STORE_DIR = Path.home() / ".oncall"
-_DEFAULT_STORE_FILE = _DEFAULT_STORE_DIR / "sop_beliefs.json"
+from super_ai.memory.repositories import SopBeliefRepository, SopBeliefStateRecord
+
 _ALPHA = 1.0  # Laplace smoothing prior
-_MAX_EVIDENCE_PER_SOP = 100  # cap stored evidence records per SOP
 
 RewriteAction = Literal["explore", "patch", "compress", "split", "retire"]
 
@@ -38,6 +32,7 @@ class DiagnosticEvidence:
 
     task_id: str
     sop_id: str
+    document_version: str
     context: str = ""
     outcome: Literal["success", "failure"] = "success"
     source: Literal["auto", "manual"] = "auto"
@@ -136,22 +131,6 @@ class SopBeliefState:
             "last_updated": self.last_updated,
         }
 
-    @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> SopBeliefState:
-        return cls(
-            sop_id=str(raw.get("sop_id") or ""),
-            alpha=float(raw.get("alpha", _ALPHA)),
-            beta=float(raw.get("beta", _ALPHA)),
-            failure_modes=dict(raw.get("failure_modes") or {}),
-            contexts=dict(raw.get("contexts") or {}),
-            observations=int(raw.get("observations") or 0),
-            mean_tokens=float(raw.get("mean_tokens") or 0.0),
-            mean_turns=float(raw.get("mean_turns") or 0.0),
-            mean_elapsed_seconds=float(raw.get("mean_elapsed_seconds") or 0.0),
-            last_updated=str(raw.get("last_updated") or ""),
-        )
-
-
 # ---------------------------------------------------------------------------
 # rewrite policy
 # ---------------------------------------------------------------------------
@@ -223,166 +202,115 @@ def decide_rewrite(belief: SopBeliefState) -> RewriteDecision:
 # ---------------------------------------------------------------------------
 
 
-class SopBeliefRegistry:
-    """JSON-backed registry of SOP posterior beliefs.
+class SopBeliefService:
+    """Apply Bayesian SOP rules through tenant-scoped persistence."""
 
-    Usage::
+    def __init__(self, repository: SopBeliefRepository) -> None:
+        self._repository = repository
 
-        registry = SopBeliefRegistry()
-        registry.record(DiagnosticEvidence(...))
-        belief = registry.get("sop_java_ecommerce_001")
-        recommendations = registry.get_rewrite_recommendations()
-    """
-
-    def __init__(self, path: Path | str | None = None) -> None:
-        resolved = Path(path) if path is not None else _DEFAULT_STORE_FILE
-        self._path = resolved
-        self._beliefs: dict[str, SopBeliefState] = {}
-        self._evidence_log: dict[str, list[dict[str, Any]]] = {}
-        self._load()
-
-    # -- public API -----------------------------------------------------------
-
-    def record(self, evidence: DiagnosticEvidence) -> SopBeliefState:
-        """Ingest one trajectory, update the SOP belief, and persist."""
-        belief = self._beliefs.get(evidence.sop_id)
-        if belief is None:
-            belief = SopBeliefState(sop_id=evidence.sop_id)
-            self._beliefs[evidence.sop_id] = belief
-        belief.update(evidence)
-        self._evidence_log.setdefault(evidence.sop_id, []).append(
-            {
-                "task_id": evidence.task_id,
-                "context": evidence.context,
-                "outcome": evidence.outcome,
-                "failure_mode": evidence.failure_mode,
-                "total_tokens": evidence.total_tokens,
-                "turns": evidence.turns,
-                "elapsed_seconds": evidence.elapsed_seconds,
-                "created_at": evidence.created_at,
-            }
+    async def record(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        evidence: DiagnosticEvidence,
+    ) -> SopBeliefState:
+        state = await self._repository.record(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            task_id=evidence.task_id,
+            document_id=evidence.sop_id,
+            document_version=evidence.document_version,
+            context=evidence.context,
+            outcome=evidence.outcome,
+            source=evidence.source,
+            failure_mode=evidence.failure_mode,
+            total_tokens=evidence.total_tokens,
+            turns=evidence.turns,
+            elapsed_seconds=evidence.elapsed_seconds,
+            metadata=evidence.metadata,
+            created_at=datetime.fromisoformat(evidence.created_at),
         )
-        self._trim_log(evidence.sop_id)
-        self._persist()
-        return belief
+        return _belief_state_from_record(state)
 
-    def record_feedback(
-        self, *, task_id: str, rating: str, context: str = ""
+    async def record_feedback(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        rating: str,
+        context: str = "",
     ) -> list[SopBeliefState]:
-        """Apply human feedback for a diagnostic task.
-
-        Finds all SOPs that were used in *task_id*, creates manual evidence
-        (3× weight), and updates their posteriors.  Returns the updated beliefs.
-        """
-        outcome: Literal["success", "failure"] = (
-            "success" if rating == "helpful" else "failure"
+        outcome: Literal["success", "failure"] = "success" if rating == "helpful" else "failure"
+        evidence_records = await self._repository.list_evidence_for_task(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
         )
         updated: list[SopBeliefState] = []
-        seen: set[str] = set()
-
-        for sop_id, entries in self._evidence_log.items():
-            for entry in entries:
-                if entry.get("task_id") != task_id:
-                    continue
-                if sop_id in seen:
-                    break
-                seen.add(sop_id)
-                evidence = DiagnosticEvidence(
-                    task_id=task_id,
-                    sop_id=sop_id,
-                    context=context or str(entry.get("context") or ""),
-                    outcome=outcome,
-                    source="manual",
-                    failure_mode=(
-                        entry.get("failure_mode", "")
-                        if outcome == "failure"
-                        else ""
-                    ),
-                    created_at=datetime.now(timezone.utc).isoformat(
-                        timespec="seconds"
+        seen: set[tuple[str, str]] = set()
+        for record in evidence_records:
+            key = (record.document_id, record.document_version)
+            if key in seen:
+                continue
+            seen.add(key)
+            updated.append(
+                await self.record(
+                    owner_user_id=owner_user_id,
+                    tenant_id=tenant_id,
+                    evidence=DiagnosticEvidence(
+                        task_id=task_id,
+                        sop_id=record.document_id,
+                        document_version=record.document_version,
+                        context=context or record.context,
+                        outcome=outcome,
+                        source="manual",
+                        failure_mode=record.failure_mode if outcome == "failure" else "",
                     ),
                 )
-                updated.append(self.record(evidence))
-                break
+            )
         return updated
 
-    def get(self, sop_id: str) -> SopBeliefState | None:
-        """Return the posterior belief for *sop_id*, or None."""
-        return self._beliefs.get(sop_id)
-
-    def top_sops(
+    async def top_sops(
         self,
-        sop_ids: Sequence[str],
         *,
+        owner_user_id: str,
+        tenant_id: str,
+        document_versions: Mapping[str, str],
         retrieval_scores: Mapping[str, float] | None = None,
         belief_weight: float = 0.3,
         min_observations: int = 3,
     ) -> list[str]:
-        """Reorder *sop_ids* by combined retrieval + posterior score.
-
-        When a SOP lacks enough observations its belief is not used; it keeps
-        its original retrieval rank.  *belief_weight* controls the trade-off
-        between vector similarity (0.7 by default) and posterior (0.3 by default).
-        """
+        states = await self._repository.list_states(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            document_versions=document_versions,
+        )
+        beliefs = {state.document_id: _belief_state_from_record(state) for state in states}
         scores = dict(retrieval_scores or {})
         min_obs = max(min_observations, 1)
 
-        def _key(sop_id: str) -> float:
+        def key(sop_id: str) -> float:
             retrieval = scores.get(sop_id, 0.5)
-            belief = self._beliefs.get(sop_id)
+            belief = beliefs.get(sop_id)
             if belief is None or belief.observations < min_obs:
-                return retrieval  # insufficient evidence — trust retrieval
-            posterior = belief.success_probability
-            return retrieval * (1.0 - belief_weight) + posterior * belief_weight
+                return retrieval
+            return retrieval * (1.0 - belief_weight) + belief.success_probability * belief_weight
 
-        return sorted(sop_ids, key=_key, reverse=True)
+        return sorted(document_versions, key=key, reverse=True)
 
-    def get_rewrite_recommendations(self) -> dict[str, RewriteDecision]:
-        """Return rewrite recommendations for every tracked SOP."""
-        return {sid: decide_rewrite(b) for sid, b in self._beliefs.items()}
 
-    def get_at_risk_sops(self, threshold: float = 0.5) -> list[SopBeliefState]:
-        """Return SOPs whose posterior success probability is below *threshold*."""
-        return [b for b in self._beliefs.values() if b.success_probability < threshold and b.observations >= 2]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "beliefs": {sid: b.to_dict() for sid, b in self._beliefs.items()},
-            "evidence_log": dict(self._evidence_log),
-        }
-
-    # -- internal -------------------------------------------------------------
-
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        beliefs_raw = raw.get("beliefs") if isinstance(raw, dict) else {}
-        if isinstance(beliefs_raw, dict):
-            self._beliefs = {
-                str(k): SopBeliefState.from_dict(v)
-                for k, v in beliefs_raw.items()
-                if isinstance(v, dict)
-            }
-        evidence_raw = raw.get("evidence_log") if isinstance(raw, dict) else {}
-        if isinstance(evidence_raw, dict):
-            self._evidence_log = {
-                str(k): list(v) if isinstance(v, list) else []
-                for k, v in evidence_raw.items()
-            }
-
-    def _persist(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.to_dict()
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
-
-    def _trim_log(self, sop_id: str) -> None:
-        entries = self._evidence_log.get(sop_id)
-        if entries is not None and len(entries) > _MAX_EVIDENCE_PER_SOP:
-            self._evidence_log[sop_id] = entries[-_MAX_EVIDENCE_PER_SOP:]
+def _belief_state_from_record(record: SopBeliefStateRecord) -> SopBeliefState:
+    return SopBeliefState(
+        sop_id=record.document_id,
+        alpha=record.alpha,
+        beta=record.beta,
+        failure_modes=dict(record.failure_modes),
+        contexts=dict(record.contexts),
+        observations=record.observations,
+        mean_tokens=record.mean_tokens,
+        mean_turns=record.mean_turns,
+        mean_elapsed_seconds=record.mean_elapsed_seconds,
+        last_updated=record.last_updated.isoformat(timespec="seconds"),
+    )

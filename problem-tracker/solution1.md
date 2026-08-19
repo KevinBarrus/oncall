@@ -81,7 +81,7 @@
 - 新增 Alembic 迁移和 Repository，将 belief state 与 evidence 纳入数据库事务。
 - 至少保存 `owner_user_id`、`tenant_id`、`document_id`、`document_version` 和 `task_id`。
 - 增加唯一作用域、审计、备份和并发更新语义，删除用户目录 JSON。
-- 当前待实现。
+- 已完成：SOP belief state/evidence 已迁移到 SQLite，并由 Alembic 管理；读写经过 owner/tenant 作用域 Repository，诊断与反馈改用异步 service，旧 JSON 运行时读写已移除。补充了 Repository 隔离/版本测试和反馈 API 回归测试。
 
 ## 问题12的解决方案：只对实际使用的 SOP 归因
 
@@ -100,4 +100,4 @@
 
 - 问题1～问题4已完成代码实现并补充测试。
 - 问题6已完成真实 HTTP/SSE 聊天链路评测入口并补充解析测试。
-- 问题7～问题10已完成当前 fixture 范围内的修复；问题11～问题13保留为后续修复项。
+- 问题7～问题11已完成当前范围内的修复；问题12～问题13保留为后续修复项。

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 from uuid import uuid4
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +25,8 @@ from super_ai.memory.models import (
     GraphCheckpointModel,
     KnowledgeDocumentModel,
     ReportEvidenceLinkModel,
+    SopBeliefEvidenceModel,
+    SopBeliefStateModel,
     ToolCallAuditModel,
     UserChatConfigurationModel,
     UserChatPromptModel,
@@ -46,6 +48,8 @@ from super_ai.memory.repositories import (
     KnowledgeDocumentRecord,
     MemoryRepositories,
     ReportEvidenceLinkRecord,
+    SopBeliefEvidenceRecord,
+    SopBeliefStateRecord,
     TenantScopeError,
     TimeRangeFilter,
     ToolCallAuditRecord,
@@ -1536,6 +1540,140 @@ class SQLiteDiagnosticMemoryRepository:
         return [_graph_checkpoint_record(row) for row in rows]
 
 
+class SQLiteSopBeliefRepository:
+    """SQLite persistence for tenant-scoped SOP posterior state."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def record(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        document_id: str,
+        document_version: str,
+        context: str,
+        outcome: str,
+        source: str,
+        failure_mode: str,
+        total_tokens: int,
+        turns: int,
+        elapsed_seconds: float,
+        metadata: JsonDict | None = None,
+        created_at: datetime | None = None,
+    ) -> SopBeliefStateRecord:
+        timestamp = created_at or utc_now()
+        weight = 3.0 if source == "manual" else 1.0
+        async with self._session_factory() as session:
+            async with session.begin():
+                statement = select(SopBeliefStateModel).where(
+                    SopBeliefStateModel.owner_user_id == owner_user_id,
+                    SopBeliefStateModel.tenant_id == tenant_id,
+                    SopBeliefStateModel.document_id == document_id,
+                    SopBeliefStateModel.document_version == document_version,
+                )
+                state = (await session.scalars(statement)).one_or_none()
+                if state is None:
+                    state = SopBeliefStateModel(
+                        id=f"sop_belief_{uuid4().hex}",
+                        owner_user_id=owner_user_id,
+                        tenant_id=tenant_id,
+                        document_id=document_id,
+                        document_version=document_version,
+                        alpha=1.0,
+                        beta=1.0,
+                        failure_modes={},
+                        contexts={},
+                        observations=0,
+                        mean_tokens=0.0,
+                        mean_turns=0.0,
+                        mean_elapsed_seconds=0.0,
+                        last_updated=timestamp,
+                    )
+                    session.add(state)
+                    await session.flush()
+
+                _update_sop_belief_state(
+                    state,
+                    context=context,
+                    outcome=outcome,
+                    failure_mode=failure_mode,
+                    total_tokens=total_tokens,
+                    turns=turns,
+                    elapsed_seconds=elapsed_seconds,
+                    weight=weight,
+                    updated_at=timestamp,
+                )
+                session.add(
+                    SopBeliefEvidenceModel(
+                        id=f"sop_evidence_{uuid4().hex}",
+                        state_id=state.id,
+                        owner_user_id=owner_user_id,
+                        tenant_id=tenant_id,
+                        task_id=task_id,
+                        document_id=document_id,
+                        document_version=document_version,
+                        context=context,
+                        outcome=outcome,
+                        source=source,
+                        failure_mode=failure_mode,
+                        total_tokens=total_tokens,
+                        turns=turns,
+                        elapsed_seconds=elapsed_seconds,
+                        metadata_json=metadata or {},
+                        created_at=timestamp,
+                    )
+                )
+            return _sop_belief_state_record(state)
+
+    async def list_states(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        document_versions: Mapping[str, str],
+    ) -> list[SopBeliefStateRecord]:
+        if not document_versions:
+            return []
+        version_filter = or_(
+            *(
+                (SopBeliefStateModel.document_id == document_id)
+                & (SopBeliefStateModel.document_version == document_version)
+                for document_id, document_version in document_versions.items()
+            )
+        )
+        statement = select(SopBeliefStateModel).where(
+            SopBeliefStateModel.owner_user_id == owner_user_id,
+            SopBeliefStateModel.tenant_id == tenant_id,
+            version_filter,
+        )
+        async with self._session_factory() as session:
+            rows = list((await session.scalars(statement)).all())
+        return [_sop_belief_state_record(row) for row in rows]
+
+    async def list_evidence_for_task(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+    ) -> list[SopBeliefEvidenceRecord]:
+        statement = (
+            select(SopBeliefEvidenceModel)
+            .where(
+                SopBeliefEvidenceModel.owner_user_id == owner_user_id,
+                SopBeliefEvidenceModel.tenant_id == tenant_id,
+                SopBeliefEvidenceModel.task_id == task_id,
+            )
+            .order_by(SopBeliefEvidenceModel.created_at.asc(), SopBeliefEvidenceModel.id.asc())
+        )
+        async with self._session_factory() as session:
+            rows = list((await session.scalars(statement)).all())
+        return [_sop_belief_evidence_record(row) for row in rows]
+
+
 def create_sqlite_memory_repositories(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> MemoryRepositories:
@@ -1558,6 +1696,7 @@ def create_sqlite_memory_repositories(
         background_jobs=SQLiteBackgroundJobRepository(session_factory),
         feedback=SQLiteUserFeedbackRepository(session_factory),
         mcp_connections=SQLiteMcpConnectionRepository(session_factory),
+        sop_beliefs=SQLiteSopBeliefRepository(session_factory),
     )
 
 
@@ -1916,6 +2055,78 @@ def _diagnostic_evidence_record(row: DiagnosticEvidenceModel) -> DiagnosticEvide
         source=row.source,
         summary=row.summary,
         payload=_json_dict(row.payload),
+        created_at=_ensure_utc(row.created_at),
+    )
+
+
+def _update_sop_belief_state(
+    state: SopBeliefStateModel,
+    *,
+    context: str,
+    outcome: str,
+    failure_mode: str,
+    total_tokens: int,
+    turns: int,
+    elapsed_seconds: float,
+    weight: float,
+    updated_at: datetime,
+) -> None:
+    if outcome == "success":
+        state.alpha += weight
+    else:
+        state.beta += weight
+        if failure_mode:
+            modes = dict(state.failure_modes)
+            modes[failure_mode] = modes.get(failure_mode, 0) + 1
+            state.failure_modes = modes
+    contexts = dict(state.contexts)
+    context_key = context or "unknown"
+    contexts[context_key] = contexts.get(context_key, 0) + 1
+    state.contexts = contexts
+    state.observations += 1
+    observations = float(state.observations)
+    state.mean_tokens += (total_tokens - state.mean_tokens) / observations
+    state.mean_turns += (turns - state.mean_turns) / observations
+    state.mean_elapsed_seconds += (elapsed_seconds - state.mean_elapsed_seconds) / observations
+    state.last_updated = updated_at
+
+
+def _sop_belief_state_record(row: SopBeliefStateModel) -> SopBeliefStateRecord:
+    return SopBeliefStateRecord(
+        id=row.id,
+        owner_user_id=row.owner_user_id,
+        tenant_id=row.tenant_id,
+        document_id=row.document_id,
+        document_version=row.document_version,
+        alpha=row.alpha,
+        beta=row.beta,
+        failure_modes=dict(row.failure_modes),
+        contexts=dict(row.contexts),
+        observations=row.observations,
+        mean_tokens=row.mean_tokens,
+        mean_turns=row.mean_turns,
+        mean_elapsed_seconds=row.mean_elapsed_seconds,
+        last_updated=_ensure_utc(row.last_updated),
+    )
+
+
+def _sop_belief_evidence_record(row: SopBeliefEvidenceModel) -> SopBeliefEvidenceRecord:
+    return SopBeliefEvidenceRecord(
+        id=row.id,
+        state_id=row.state_id,
+        owner_user_id=row.owner_user_id,
+        tenant_id=row.tenant_id,
+        task_id=row.task_id,
+        document_id=row.document_id,
+        document_version=row.document_version,
+        context=row.context,
+        outcome=row.outcome,
+        source=row.source,
+        failure_mode=row.failure_mode,
+        total_tokens=row.total_tokens,
+        turns=row.turns,
+        elapsed_seconds=row.elapsed_seconds,
+        metadata=_json_dict(row.metadata_json),
         created_at=_ensure_utc(row.created_at),
     )
 

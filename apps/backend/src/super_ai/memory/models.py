@@ -638,6 +638,82 @@ class DiagnosticEvidenceModel(Base):
     )
 
 
+class SopBeliefStateModel(Base):
+    """Owner- and tenant-scoped posterior state for one SOP document version."""
+
+    __tablename__ = "sop_belief_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "tenant_id",
+            "document_id",
+            "document_version",
+            name="uq_sop_belief_states_scope_document_version",
+        ),
+        Index(
+            "ix_sop_belief_states_scope_document",
+            "owner_user_id",
+            "tenant_id",
+            "document_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    alpha: Mapped[float] = mapped_column(nullable=False, default=1.0)
+    beta: Mapped[float] = mapped_column(nullable=False, default=1.0)
+    failure_modes: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    contexts: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    observations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_tokens: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    mean_turns: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    mean_elapsed_seconds: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SopBeliefEvidenceModel(Base):
+    """Immutable evidence used to update a SOP posterior."""
+
+    __tablename__ = "sop_belief_evidence"
+    __table_args__ = (
+        Index(
+            "ix_sop_belief_evidence_scope_task",
+            "owner_user_id",
+            "tenant_id",
+            "task_id",
+        ),
+        Index(
+            "ix_sop_belief_evidence_state_created",
+            "state_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    state_id: Mapped[str] = mapped_column(
+        ForeignKey("sop_belief_states.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    context: Mapped[str] = mapped_column(String(240), nullable=False, default="")
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    failure_mode: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    elapsed_seconds: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReportEvidenceLinkModel(Base):
     """Owner-scoped provenance edge from a diagnostic report to evidence."""
 
