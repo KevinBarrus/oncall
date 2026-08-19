@@ -675,6 +675,22 @@ def test_search_log_summary_keeps_unparseable_preview() -> None:
     assert "FATAL database corrupted" in summary
 
 
+def test_search_log_summary_contains_traceable_compression_metadata() -> None:
+    output = [
+        {
+            "text": json.dumps(
+                [{"LogJson": json.dumps({"level": "ERROR", "message": "timeout"})}]
+            )
+        }
+    ]
+
+    summary = json.loads(_tool_result_summary("SearchLog", output))
+
+    assert summary["compression"]["mode"] == "structured_cluster_sample"
+    assert len(summary["compression"]["sourceHash"]) == 64
+    assert summary["compression"]["originalChars"] > 0
+
+
 async def _register(client: httpx.AsyncClient, email: str) -> dict[str, Any]:
     response = await client.post(
         "/auth/register",

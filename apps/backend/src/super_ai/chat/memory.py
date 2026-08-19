@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any, Literal, cast
 
 from langchain_core.messages.utils import count_tokens_approximately
@@ -359,6 +360,66 @@ async def maybe_compress_tool_output(
         f"{capped[:4000]}\n\n"
         f"[... 输出已按信号、首尾和时间线采样，原文约 {approx_tokens} tokens]"
     )
+
+
+async def maybe_compress_structured_tool_output(
+    value: Mapping[str, object],
+    *,
+    tool_name: str,
+    llm_provider: LlmProvider,
+    threshold_tokens: int = TOOL_OUTPUT_COMPRESS_THRESHOLD_TOKENS,
+) -> dict[str, object] | Mapping[str, object]:
+    """Compress a large mapping without discarding its machine-readable envelope."""
+    encoded = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+    if len(encoded) // 4 <= threshold_tokens:
+        return value
+    compressed = await maybe_compress_tool_output(
+        encoded,
+        tool_name=tool_name,
+        llm_provider=llm_provider,
+        threshold_tokens=threshold_tokens,
+    )
+    mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
+    return {
+        "content": compressed.removeprefix("[compressed] "),
+        "preserved": _preserve_structured_fields(value),
+        "_compression": {
+            "mode": mode,
+            "sourceHash": sha256(encoded.encode("utf-8")).hexdigest(),
+            "originalChars": len(encoded),
+            "compressedChars": len(compressed),
+        },
+    }
+
+
+def tool_output_compression_metadata(
+    original: str,
+    compressed: str,
+    *,
+    mode: str,
+) -> dict[str, object]:
+    return {
+        "mode": mode,
+        "sourceHash": sha256(original.encode("utf-8")).hexdigest(),
+        "originalChars": len(original),
+        "compressedChars": len(compressed),
+    }
+
+
+def _preserve_structured_fields(value: Mapping[str, object]) -> dict[str, object]:
+    preserved: dict[str, object] = {}
+    for key in (
+        "id",
+        "status",
+        "error",
+        "recordCount",
+        "count",
+        "citations",
+        "references",
+    ):
+        if key in value:
+            preserved[key] = value[key]
+    return preserved
 
 
 def _select_text_for_compression(text: str, *, max_chars: int) -> str:

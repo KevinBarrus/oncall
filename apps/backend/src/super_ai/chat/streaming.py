@@ -27,8 +27,10 @@ from super_ai.chat.memory import (
     ChatMemoryService,
     ChatRuntimeContextBudget,
     ChatRuntimeContextLimitReached,
+    maybe_compress_structured_tool_output,
     maybe_compress_tool_output,
     memory_payload,
+    tool_output_compression_metadata,
 )
 from super_ai.error_catalog import ERROR_DEFINITIONS
 from super_ai.llm import LlmProvider
@@ -630,15 +632,22 @@ def _wrap_tool_output_compression(
     async def _compressed_coroutine(**kwargs: object) -> object:
         result = await original_coro(**kwargs)
         if isinstance(result, str) and len(result) // 4 > 2000:
-            return await maybe_compress_tool_output(
+            compressed = await maybe_compress_tool_output(
                 result, tool_name=tool.name, llm_provider=llm_provider
             )
+            mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
+            return {
+                "content": compressed.removeprefix("[compressed] "),
+                "_compression": tool_output_compression_metadata(
+                    result, compressed, mode=mode
+                ),
+            }
         if isinstance(result, dict):
-            text = json.dumps(result, ensure_ascii=False, default=str)
-            if len(text) // 4 > 2000:
-                return await maybe_compress_tool_output(
-                    text, tool_name=tool.name, llm_provider=llm_provider
-                )
+            return await maybe_compress_structured_tool_output(
+                cast(Mapping[str, object], result),
+                tool_name=tool.name,
+                llm_provider=llm_provider,
+            )
         return cast(object, result)
 
     return StructuredTool.from_function(

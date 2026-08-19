@@ -19,6 +19,7 @@ from super_ai.chat.memory import (
     _memory_instruction,
     _select_messages_for_compaction,
     _validated_memory_document,
+    maybe_compress_structured_tool_output,
     maybe_compress_tool_output,
 )
 from super_ai.llm import LlmProvider
@@ -165,6 +166,28 @@ async def test_tool_compression_fallback_keeps_selected_regions() -> None:
 
     assert len(compressed) <= 4_100
     assert "FATAL database corrupted" in compressed
+
+
+@pytest.mark.asyncio
+async def test_structured_tool_compression_keeps_machine_readable_metadata() -> None:
+    result = await maybe_compress_structured_tool_output(
+        {
+            "status": "ok",
+            "citations": [{"id": "citation-1"}],
+            "records": [{"message": "timeout"}] * 2_000,
+        },
+        tool_name="knowledge_retrieval",
+        llm_provider=cast(LlmProvider, FakeProvider()),
+    )
+
+    assert isinstance(result, dict)
+    assert result["preserved"] == {
+        "status": "ok",
+        "citations": [{"id": "citation-1"}],
+    }
+    compression = result["_compression"]
+    assert isinstance(compression, dict)
+    assert compression["sourceHash"]
 
 
 @pytest.fixture

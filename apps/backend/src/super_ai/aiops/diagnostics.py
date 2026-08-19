@@ -8,6 +8,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
+from hashlib import sha256
 from operator import add
 from time import monotonic
 from typing import Annotated, Any, Literal, TypedDict, cast
@@ -1421,6 +1422,7 @@ def _tool_result_summary(tool_name: str, output: object) -> str:
     if tool_name != "SearchLog":
         return _bounded_json(output)
     records = _search_log_records(output)
+    source_hash, original_chars = _tool_output_fingerprint(output)
     if not records:
         return json.dumps(
             {
@@ -1428,12 +1430,25 @@ def _tool_result_summary(tool_name: str, output: object) -> str:
                 "records": [],
                 "message": "CLS 未返回可解析日志。",
                 "rawPreview": _bounded_json(output, limit=2_000),
+                "compression": {
+                    "mode": "unparseable_preview",
+                    "sourceHash": source_hash,
+                    "originalChars": original_chars,
+                },
             },
             ensure_ascii=False,
             separators=(",", ":"),
         )
     return json.dumps(
-        {"recordCount": len(records), "records": _representative_log_records(records)},
+        {
+            "recordCount": len(records),
+            "records": _representative_log_records(records),
+            "compression": {
+                "mode": "structured_cluster_sample",
+                "sourceHash": source_hash,
+                "originalChars": original_chars,
+            },
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -1588,6 +1603,11 @@ def _safe_value(value: object) -> object:
 def _bounded_json(value: object, limit: int = 4_000) -> str:
     encoded = json.dumps(_safe_value(value), ensure_ascii=True, separators=(",", ":"), default=str)
     return encoded[:limit]
+
+
+def _tool_output_fingerprint(value: object) -> tuple[str, int]:
+    encoded = json.dumps(_safe_value(value), ensure_ascii=False, separators=(",", ":"), default=str)
+    return sha256(encoded.encode("utf-8")).hexdigest(), len(encoded)
 
 
 def _safe_error(exc: Exception) -> str:
