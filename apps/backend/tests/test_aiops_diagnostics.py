@@ -143,9 +143,11 @@ class FakeChatModel:
         *,
         report_response: str = f"```markdown\n{REPORT_MARKDOWN}\n```",
         report_error: Exception | None = None,
+        plan_response: str = '{"steps": []}',
     ) -> None:
         self.report_response = report_response
         self.report_error = report_error
+        self.plan_response = plan_response
         self.inputs: list[object] = []
 
     async def ainvoke(self, input: object) -> object:
@@ -154,7 +156,7 @@ class FakeChatModel:
             if self.report_error is not None:
                 raise self.report_error
             return self.report_response
-        return '{"steps": []}'
+        return self.plan_response
 
 
 class FakeLlmProvider:
@@ -163,10 +165,12 @@ class FakeLlmProvider:
         *,
         report_response: str = f"```markdown\n{REPORT_MARKDOWN}\n```",
         report_error: Exception | None = None,
+        plan_response: str = '{"steps": []}',
     ) -> None:
         self.chat_model = FakeChatModel(
             report_response=report_response,
             report_error=report_error,
+            plan_response=plan_response,
         )
 
     def create_chat_model(self) -> FakeChatModel:
@@ -257,7 +261,13 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
         )
         mcp = FakeMcpClient()
         scheduler = FakeCaseIndexScheduler()
-        provider = FakeLlmProvider()
+        provider = FakeLlmProvider(
+            plan_response=(
+                '{"steps": [{"tool": "SearchLog", "arguments": {}, '
+                '"purpose": "Query the SOP-relevant logs."}], '
+                '"sopDocumentIds": ["document_sop"]}'
+            )
+        )
         service = AiopsDiagnosticService(
             repositories=repositories,
             llm_provider=cast(LlmProvider, provider),
@@ -313,6 +323,16 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
             tenant_id="user-a",
             task_id=task.id,
         )
+        belief_states = await cast(Any, repositories.sop_beliefs).list_states(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            document_versions={"document_sop": "sop-hash-v1"},
+        )
+        belief_evidence = await cast(Any, repositories.sop_beliefs).list_evidence_for_task(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id=task.id,
+        )
     finally:
         await engine.dispose()
 
@@ -363,6 +383,10 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
         ("document_sop", "sop-hash-v1")
     ]
     assert exposures[0].evidence_strength == "candidate"
+    assert [state.observations for state in belief_states] == [1]
+    assert [(item.document_id, item.attribution_stage, item.evidence_strength) for item in belief_evidence] == [
+        ("document_sop", "plan", "planned")
+    ]
     events = [
         json.loads(record.message) for record in caplog.records if record.message.startswith("{")
     ]

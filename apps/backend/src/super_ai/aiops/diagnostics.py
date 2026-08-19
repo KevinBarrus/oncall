@@ -823,16 +823,24 @@ class AiopsDiagnosticService:
             if refreshed_task is not None:
                 updated_task = refreshed_task
 
-        # -- record Bayesian evidence for every SOP used in this diagnostic --
+        # -- record Bayesian evidence only for SOPs referenced by the validated plan --
         if self._sop_belief_service is not None:
             sop_hits = cast(list[JsonDict], state.get("sop_hits") or [])
+            hits_by_document_id = {
+                str(hit.get("documentId") or ""): hit for hit in sop_hits
+            }
+            planned_sop_document_ids = cast(
+                list[str], state.get("planned_sop_document_ids") or []
+            )
             alert_payload = _json_dict(state.get("alert"))
             alert_context = _evidence_context(alert_payload)
             plan_len = len(cast(list[JsonDict], state.get("plan") or []))
-            for hit in sop_hits:
-                sop_id = str(hit.get("documentId") or "")
+            for sop_id in planned_sop_document_ids:
+                hit = hits_by_document_id.get(sop_id)
+                if hit is None:
+                    continue
                 document_version = str(hit.get("documentVersion") or "")
-                if not sop_id or not document_version:
+                if not document_version:
                     continue
                 evidence = DiagnosticEvidence(
                     task_id=task_id,
@@ -842,6 +850,8 @@ class AiopsDiagnosticService:
                     outcome="success" if status == "succeeded" else "failure",
                     failure_mode="execution_failed" if status == "failed" else "",
                     turns=plan_len,
+                    attribution_stage="plan",
+                    evidence_strength="planned",
                 )
                 try:
                     await self._sop_belief_service.record(

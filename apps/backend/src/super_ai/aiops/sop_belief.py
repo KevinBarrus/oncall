@@ -40,6 +40,8 @@ class DiagnosticEvidence:
     total_tokens: int = 0
     turns: int = 0
     elapsed_seconds: float = 0.0
+    attribution_stage: str = "legacy"
+    evidence_strength: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -228,6 +230,8 @@ class SopBeliefService:
             total_tokens=evidence.total_tokens,
             turns=evidence.turns,
             elapsed_seconds=evidence.elapsed_seconds,
+            attribution_stage=evidence.attribution_stage,
+            evidence_strength=evidence.evidence_strength,
             metadata=evidence.metadata,
             created_at=datetime.fromisoformat(evidence.created_at),
         )
