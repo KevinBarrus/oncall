@@ -457,6 +457,25 @@ class AgentToolCallAuditModel(Base):
     )
 
 
+class CompressedToolEvidenceModel(Base):
+    __tablename__ = "compressed_tool_evidence"
+    __table_args__ = (
+        Index("ix_compressed_tool_evidence_owner_session", "owner_user_id", "chat_session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    tool_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class DiagnosticTaskModel(Base):
     """Persisted AIOps diagnostic task."""
 

@@ -17,6 +17,7 @@ REQUIRED_MEMORY_TABLES = {
     "aiops_tool_call_audits",
     "aiops_graph_checkpoints",
     "tool_call_audits",
+    "compressed_tool_evidence",
     "user_chat_configurations",
     "user_chat_prompts",
     "user_chat_skills",
@@ -58,6 +59,7 @@ def test_alembic_upgrade_creates_memory_tables(tmp_path: Path) -> None:
         "ix_aiops_graph_checkpoints_task_thread",
         "ix_tool_call_audits_owner_session_created_at",
         "ix_tool_call_audits_owner_diagnostic_created_at",
+        "ix_compressed_tool_evidence_owner_session",
         "ix_user_chat_prompts_owner_default",
         "ix_user_chat_prompts_owner_updated_at",
         "ix_user_chat_skills_owner_filename",
@@ -79,6 +81,9 @@ def test_memory_metadata_exposes_required_tables_and_json_columns() -> None:
     assert isinstance(tables["tool_call_audits"].c["arguments"].type, JSON)
     assert "chat_session_id" in tables["tool_call_audits"].c
     assert "diagnostic_task_id" in tables["tool_call_audits"].c
+    assert {"chat_session_id", "content", "source_hash"} <= set(
+        tables["compressed_tool_evidence"].c.keys()
+    )
     assert isinstance(tables["aiops_graph_checkpoints"].c["checkpoint_payload"].type, JSON)
     assert "content" in tables["user_chat_prompts"].c
     assert "content" in tables["user_chat_skills"].c

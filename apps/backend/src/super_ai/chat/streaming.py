@@ -41,6 +41,7 @@ from super_ai.mcp_connections import McpConnectionService
 from super_ai.memory.repositories import (
     ChatMessageRecord,
     ChatSessionRecord,
+    CompressedToolEvidenceRepository,
     JsonDict,
     KnowledgeDocumentRepository,
     MemoryRepositories,
@@ -137,6 +138,10 @@ class LoadSkillInput(BaseModel):
     """Arguments accepted by the progressive Skill loading tool."""
 
     skill_name: str = Field(description="要加载的 Skill name，必须来自 Available Skills。")
+
+
+class ReadToolOutputEvidenceInput(BaseModel):
+    evidence_id: str = Field(description="压缩工具结果中的 evidenceId")
 
 
 class ChatAgentRunner(Protocol):
@@ -552,12 +557,14 @@ class LangChainChatAgentRunner:
         llm_provider: LlmProvider,
         retrieval_tool: KnowledgeRetrievalTool,
         document_repository: KnowledgeDocumentRepository | None = None,
+        compressed_tool_evidence: CompressedToolEvidenceRepository | None = None,
         mcp_client: LocalMcpClient | None = None,
         mcp_client_provider: McpConnectionService | None = None,
     ) -> None:
         self._llm_provider = llm_provider
         self._retrieval_tool = retrieval_tool
         self._document_repository = document_repository
+        self._compressed_tool_evidence = compressed_tool_evidence
         self._mcp_client = mcp_client
         self._mcp_client_provider = mcp_client_provider
 
@@ -570,6 +577,10 @@ class LangChainChatAgentRunner:
         registry = ToolRegistry()
         registry.register_local_tool(langchain_tool)
         registry.register_local_tool(create_current_time_tool())
+        if self._compressed_tool_evidence is not None:
+            registry.register_local_tool(
+                create_read_tool_output_evidence_tool(request, self._compressed_tool_evidence)
+            )
 
         # add read_document when document repository is available
         if self._document_repository is not None and request.accessible_knowledge_base_ids:
@@ -593,7 +604,10 @@ class LangChainChatAgentRunner:
 
         # wrap tools with output compression to avoid context window blow-up
         llm = self._llm_provider
-        tools = [_wrap_tool_output_compression(t, llm) for t in registry.langchain_tools()]
+        tools = [
+            _wrap_tool_output_compression(t, llm, request, self._compressed_tool_evidence)
+            for t in registry.langchain_tools()
+        ]
 
         agent = _create_langchain_agent(
             model=cast(Any, self._llm_provider.create_chat_model()),
@@ -646,6 +660,8 @@ class LangChainChatAgentRunner:
 def _wrap_tool_output_compression(
     tool: StructuredTool,
     llm_provider: LlmProvider,
+    request: ChatAgentRequest,
+    evidence_repository: CompressedToolEvidenceRepository | None,
 ) -> StructuredTool:
     """Wrap an async tool so large outputs are auto-compressed via LLM.
 
@@ -665,18 +681,41 @@ def _wrap_tool_output_compression(
             if compressed == result:
                 return result
             mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
+            metadata = tool_output_compression_metadata(result, compressed, mode=mode)
+            if evidence_repository is not None:
+                evidence = await evidence_repository.create(
+                    owner_user_id=request.owner_user_id,
+                    chat_session_id=request.session_id,
+                    tool_name=tool.name,
+                    content=result,
+                    source_hash=str(metadata["sourceHash"]),
+                )
+                metadata["evidenceId"] = evidence.id
             return {
                 "content": compressed.removeprefix("[compressed] "),
-                "_compression": tool_output_compression_metadata(
-                    result, compressed, mode=mode
-                ),
+                "_compression": metadata,
             }
         if isinstance(result, dict):
-            return await maybe_compress_structured_tool_output(
+            compressed = await maybe_compress_structured_tool_output(
                 cast(Mapping[str, object], result),
                 tool_name=tool.name,
                 llm_provider=llm_provider,
             )
+            if (
+                isinstance(compressed, dict)
+                and isinstance(compressed.get("_compression"), dict)
+                and evidence_repository is not None
+            ):
+                metadata = cast(dict[str, object], compressed["_compression"])
+                evidence = await evidence_repository.create(
+                    owner_user_id=request.owner_user_id,
+                    chat_session_id=request.session_id,
+                    tool_name=tool.name,
+                    content=json.dumps(result, ensure_ascii=False, default=str),
+                    source_hash=str(metadata["sourceHash"]),
+                )
+                metadata["evidenceId"] = evidence.id
+            return compressed
         return cast(object, result)
 
     return StructuredTool.from_function(
@@ -714,6 +753,27 @@ def create_load_skill_tool(skills: Sequence[SelectedChatSkill]) -> StructuredToo
             f"中的描述匹配时调用。可用 name: {available_names}。"
         ),
         args_schema=LoadSkillInput,
+    )
+
+
+def create_read_tool_output_evidence_tool(
+    request: ChatAgentRequest, repository: CompressedToolEvidenceRepository
+) -> StructuredTool:
+    async def read_tool_output_evidence(evidence_id: str) -> str:
+        evidence = await repository.get(
+            owner_user_id=request.owner_user_id,
+            chat_session_id=request.session_id,
+            evidence_id=evidence_id,
+        )
+        if evidence is None:
+            return "证据不存在或无权访问"
+        return evidence.content
+
+    return StructuredTool.from_function(
+        coroutine=read_tool_output_evidence,
+        name="read_tool_output_evidence",
+        description="按 evidenceId 读取当前会话被压缩工具输出的原文",
+        args_schema=ReadToolOutputEvidenceInput,
     )
 
 

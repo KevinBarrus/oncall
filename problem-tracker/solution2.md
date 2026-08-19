@@ -21,6 +21,7 @@
 
 - 将原始工具输出持久化为受 owner/session/task 作用域保护的证据，压缩结果保存可回查 ID、哈希和范围。
 - 为日志、JSON 和指标分别采用结构化无损字段保留；Agent 需要细节时通过受控工具展开原文或指定片段。
+- 已完成：压缩原文保存至 owner/session 作用域 SQLite 证据表，压缩结果附带 `evidenceId`，Agent 可通过当前会话的 `read_tool_output_evidence` 工具按需展开
 
 ## 问题3的解决方案：为压缩提供降级与非阻塞体验
 

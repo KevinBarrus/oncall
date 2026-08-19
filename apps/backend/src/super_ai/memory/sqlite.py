@@ -17,6 +17,7 @@ from super_ai.memory.models import (
     AgentToolCallAuditModel,
     ChatMessageModel,
     ChatSessionModel,
+    CompressedToolEvidenceModel,
     DiagnosticCaseModel,
     DiagnosticEvidenceModel,
     DiagnosticReportModel,
@@ -40,6 +41,7 @@ from super_ai.memory.repositories import (
     AgentToolCallAuditRecord,
     ChatMessageRecord,
     ChatSessionRecord,
+    CompressedToolEvidenceRecord,
     DiagnosticCaseRecord,
     DiagnosticEvidenceRecord,
     DiagnosticReportRecord,
@@ -677,6 +679,76 @@ class SQLiteToolCallAuditRepository:
                 ).all()
             )
         return [_agent_tool_call_audit_record(row) for row in rows]
+
+    async def list_for_diagnostic_task(
+        self,
+        *,
+        owner_user_id: str,
+        diagnostic_task_id: str,
+    ) -> list[AgentToolCallAuditRecord]:
+        async with self._session_factory() as session:
+            await _require_task(session, owner_user_id, diagnostic_task_id)
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AgentToolCallAuditModel)
+                        .where(
+                            AgentToolCallAuditModel.owner_user_id == owner_user_id,
+                            AgentToolCallAuditModel.diagnostic_task_id == diagnostic_task_id,
+                        )
+                        .order_by(
+                            AgentToolCallAuditModel.created_at.asc(),
+                            AgentToolCallAuditModel.id.asc(),
+                        )
+                    )
+                ).all()
+            )
+        return [_agent_tool_call_audit_record(row) for row in rows]
+
+
+class SQLiteCompressedToolEvidenceRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def create(
+        self,
+        *,
+        owner_user_id: str,
+        chat_session_id: str,
+        tool_name: str,
+        content: str,
+        source_hash: str,
+    ) -> CompressedToolEvidenceRecord:
+        row = CompressedToolEvidenceModel(
+            id=_uuid_hex(),
+            owner_user_id=owner_user_id,
+            chat_session_id=chat_session_id,
+            tool_name=tool_name,
+            content=content,
+            source_hash=source_hash,
+            created_at=utc_now(),
+        )
+        async with self._session_factory() as session:
+            await _require_chat_session(session, owner_user_id, chat_session_id)
+            session.add(row)
+            await session.commit()
+        return _compressed_tool_evidence_record(row)
+
+    async def get(
+        self, *, owner_user_id: str, chat_session_id: str, evidence_id: str
+    ) -> CompressedToolEvidenceRecord | None:
+        async with self._session_factory() as session:
+            await _require_chat_session(session, owner_user_id, chat_session_id)
+            row = (
+                await session.scalars(
+                    select(CompressedToolEvidenceModel).where(
+                        CompressedToolEvidenceModel.id == evidence_id,
+                        CompressedToolEvidenceModel.owner_user_id == owner_user_id,
+                        CompressedToolEvidenceModel.chat_session_id == chat_session_id,
+                    )
+                )
+            ).one_or_none()
+        return _compressed_tool_evidence_record(row) if row is not None else None
 
     async def list_for_diagnostic_task(
         self,
@@ -1808,6 +1880,7 @@ def create_sqlite_memory_repositories(
         document_index_tasks=SQLiteDocumentIndexTaskRepository(session_factory),
         diagnostics=SQLiteDiagnosticMemoryRepository(session_factory),
         tool_call_audits=SQLiteToolCallAuditRepository(session_factory),
+        compressed_tool_evidence=SQLiteCompressedToolEvidenceRepository(session_factory),
         background_jobs=SQLiteBackgroundJobRepository(session_factory),
         feedback=SQLiteUserFeedbackRepository(session_factory),
         mcp_connections=SQLiteMcpConnectionRepository(session_factory),
@@ -2387,6 +2460,20 @@ def _agent_tool_call_audit_record(row: AgentToolCallAuditModel) -> AgentToolCall
         started_at=_ensure_utc(row.started_at),
         completed_at=_ensure_utc_optional(row.completed_at),
         duration_ms=row.duration_ms,
+        created_at=_ensure_utc(row.created_at),
+    )
+
+
+def _compressed_tool_evidence_record(
+    row: CompressedToolEvidenceModel,
+) -> CompressedToolEvidenceRecord:
+    return CompressedToolEvidenceRecord(
+        id=row.id,
+        owner_user_id=row.owner_user_id,
+        chat_session_id=row.chat_session_id,
+        tool_name=row.tool_name,
+        content=row.content,
+        source_hash=row.source_hash,
         created_at=_ensure_utc(row.created_at),
     )
 

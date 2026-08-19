@@ -294,6 +294,17 @@ class AgentToolCallAuditRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class CompressedToolEvidenceRecord:
+    id: str
+    owner_user_id: str
+    chat_session_id: str
+    tool_name: str
+    content: str
+    source_hash: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class GraphCheckpointRecord:
     id: str
     owner_user_id: str
@@ -1329,6 +1340,22 @@ class SopBeliefRepository(Protocol):
         """Apply one scoped manual rating once and return current SOP states."""
         ...
 
+
+class CompressedToolEvidenceRepository(Protocol):
+    async def create(
+        self,
+        *,
+        owner_user_id: str,
+        chat_session_id: str,
+        tool_name: str,
+        content: str,
+        source_hash: str,
+    ) -> CompressedToolEvidenceRecord: ...
+    async def get(
+        self, *, owner_user_id: str, chat_session_id: str, evidence_id: str
+    ) -> CompressedToolEvidenceRecord | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryRepositories:
     """Repository bundle for dependency injection."""
@@ -1338,6 +1365,7 @@ class MemoryRepositories:
     document_index_tasks: DocumentIndexTaskRepository
     diagnostics: DiagnosticMemoryRepository
     tool_call_audits: ToolCallAuditRepository | None = None
+    compressed_tool_evidence: CompressedToolEvidenceRepository | None = None
     chat_configurations: UserChatConfigurationRepository | None = None
     chat_prompts: UserChatPromptRepository | None = None
     chat_skills: UserChatSkillRepository | None = None

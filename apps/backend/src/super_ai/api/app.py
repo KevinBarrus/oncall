@@ -1535,7 +1535,9 @@ def create_app(
         updated = await service.record_feedback(
             owner_user_id=user.id,
             tenant_id=user.id,
-            task_id=diagnostic_id, rating=rating, context=alert_context
+            task_id=diagnostic_id,
+            rating=rating,
+            context=alert_context,
         )
         return success_response(
             request,
@@ -2180,6 +2182,7 @@ def _chat_agent_runner(request: Request) -> ChatAgentRunner:
             llm_provider=_llm_provider(request),
             retrieval_tool=retrieval_tool,
             document_repository=_memory_repositories(request).documents,
+            compressed_tool_evidence=_memory_repositories(request).compressed_tool_evidence,
             mcp_client_provider=_mcp_connection_service(request),
         )
         request.app.state.chat_agent_runner = runner
