@@ -181,6 +181,19 @@ async def test_streaming_chat_emits_sse_events_and_persists_messages(
             f"/chat/sessions/{session['id']}/tool-call-audits",
             headers=headers,
         )
+        follow_up = await client.post(
+            f"/chat/sessions/{session['id']}/messages:stream",
+            headers=headers,
+            json={"content": "继续依据刚才的证据排查"},
+        )
+        isolated_session = (
+            await client.post("/chat/sessions", headers=headers, json={})
+        ).json()["data"]
+        isolated = await client.post(
+            f"/chat/sessions/{isolated_session['id']}/messages:stream",
+            headers=headers,
+            json={"content": "这是一个独立问题"},
+        )
 
     assert stream_response.status_code == 200
     assert stream_response.headers["content-type"].startswith("text/event-stream")
@@ -211,6 +224,12 @@ async def test_streaming_chat_emits_sse_events_and_persists_messages(
     assert runner.requests[0].owner_user_id == user["user"]["id"]
     assert runner.requests[0].accessible_knowledge_base_ids == (f"kb_{user['user']['id']}",)
     assert runner.requests[0].messages[-1].content == "How do I restart the API?"
+    assert follow_up.status_code == 200
+    assert "工具 knowledge_retrieval（调用 tool_call_1）" in runner.requests[1].system_prompt
+    assert '{"results":["chunk_1"]}' in runner.requests[1].system_prompt
+    assert "引用 runbook.md（ID: chunk_1；来源: runbook.md）" in runner.requests[1].system_prompt
+    assert isolated.status_code == 200
+    assert "tool_call_1" not in runner.requests[2].system_prompt
 
     history = detail_response.json()["data"]["messages"]
     assert [message["role"] for message in history] == ["user", "assistant"]
@@ -235,6 +254,10 @@ async def test_streaming_chat_emits_sse_events_and_persists_messages(
     assert [event["event"] for event in agent_events] == [
         "agent.chat.started",
         "agent.chat.completed",
+        "agent.chat.started",
+        "agent.chat.completed",
+        "agent.chat.started",
+        "agent.chat.completed",
     ]
     assert all(event["requestId"] == "chat-observe" for event in agent_events)
     assert "How do I restart the API?" not in "\n".join(record.message for record in caplog.records)
@@ -255,11 +278,11 @@ async def test_same_session_chat_requests_are_serialized() -> None:
         ) -> AsyncIterator[dict[str, object]]:
             state["active"] = cast(int, state["active"]) + 1
             state["max_active"] = max(
-                cast(int, state["max_active"]), cast(int, state["active"])
+                cast(int, state["max_active"]), state["active"]
             )
             cast(asyncio.Event, state["started"]).set()
             await cast(asyncio.Event, state["release"]).wait()
-            state["active"] = cast(int, state["active"]) - 1
+            state["active"] = state["active"] - 1
             yield {"type": "complete"}
 
     session = ChatSessionRecord(

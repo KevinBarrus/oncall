@@ -750,32 +750,6 @@ class SQLiteCompressedToolEvidenceRepository:
             ).one_or_none()
         return _compressed_tool_evidence_record(row) if row is not None else None
 
-    async def list_for_diagnostic_task(
-        self,
-        *,
-        owner_user_id: str,
-        diagnostic_task_id: str,
-    ) -> list[AgentToolCallAuditRecord]:
-        async with self._session_factory() as session:
-            await _require_task(session, owner_user_id, diagnostic_task_id)
-            rows = list(
-                (
-                    await session.scalars(
-                        select(AgentToolCallAuditModel)
-                        .where(
-                            AgentToolCallAuditModel.owner_user_id == owner_user_id,
-                            AgentToolCallAuditModel.diagnostic_task_id == diagnostic_task_id,
-                        )
-                        .order_by(
-                            AgentToolCallAuditModel.created_at.asc(),
-                            AgentToolCallAuditModel.id.asc(),
-                        )
-                    )
-                ).all()
-            )
-        return [_agent_tool_call_audit_record(row) for row in rows]
-
-
 class SQLiteKnowledgeDocumentRepository:
     """SQLite implementation of knowledge document metadata persistence."""
 
