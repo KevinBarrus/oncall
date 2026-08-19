@@ -13,4 +13,4 @@
 
 - [x] 3.1 添加 Repository 测试，覆盖证据与后验原子更新、owner/tenant 隔离和文档版本隔离。
 - [x] 3.2 添加诊断/反馈回归测试，确认重排与人工反馈仍返回既有 API 语义。
-- [ ] 3.3 运行目标 pytest、Ruff、Pyright、Alembic upgrade 与 OpenSpec 校验，并将问题 11 状态同步到 problem tracker。
+- [x] 3.3 运行目标 pytest、Ruff、Pyright、Alembic upgrade 与 OpenSpec 校验，并将问题 11 状态同步到 problem tracker。

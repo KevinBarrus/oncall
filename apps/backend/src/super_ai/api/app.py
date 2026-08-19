@@ -1520,8 +1520,11 @@ def create_app(
                 message="Diagnostic task not found.",
             )
         # extract context from the alert payload
-        alert = task.input_payload.get("alert") or {}
-        if isinstance(alert, dict):
+        alert_raw = task.input_payload.get("alert")
+        alert: dict[str, object] = (
+            cast(dict[str, object], alert_raw) if isinstance(alert_raw, dict) else {}
+        )
+        if alert:
             severity = str(alert.get("severity") or alert.get("level") or "")
             service = str(alert.get("service") or alert.get("target") or "")
         else:

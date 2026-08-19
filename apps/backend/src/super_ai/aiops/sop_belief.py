@@ -40,7 +40,7 @@ class DiagnosticEvidence:
     total_tokens: int = 0
     turns: int = 0
     elapsed_seconds: float = 0.0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
@@ -74,8 +74,8 @@ class SopBeliefState:
     sop_id: str
     alpha: float = _ALPHA  # successes + prior
     beta: float = _ALPHA  # failures + prior
-    failure_modes: dict[str, int] = field(default_factory=dict)
-    contexts: dict[str, int] = field(default_factory=dict)
+    failure_modes: dict[str, int] = field(default_factory=dict[str, int])
+    contexts: dict[str, int] = field(default_factory=dict[str, int])
     observations: int = 0
     mean_tokens: float = 0.0
     mean_turns: float = 0.0

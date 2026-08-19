@@ -298,7 +298,7 @@ class AiopsDiagnosticService:
                 == len({str(hit.get("documentId") or "") for hit in sop_hits})
             ):
                 retrieval_scores = {
-                    str(payload["documentId"]): float(payload.get("score", 0.0))
+                    str(payload["documentId"]): _float_value(payload.get("score"))
                     for payload in sop_hits
                 }
                 reranked_ids = await self._sop_belief_service.top_sops(
@@ -490,7 +490,7 @@ class AiopsDiagnosticService:
                 else f"最低限度证据收集: {query}"
             )
             tool_name = "knowledge_retrieval"
-            arguments = {"query": search_query, "topK": 3}
+            arguments = _json_dict({"query": search_query, "topK": 3})
             purpose = (
                 "Autonomous replan triggered — searching KB for alternative troubleshooting steps."
                 if contract == "autonomous_replan"
@@ -1657,6 +1657,15 @@ def _unique_strings(values: Sequence[str]) -> list[str]:
 def _json_dict(value: object) -> JsonDict:
     safe_value = _safe_value(value)
     return cast(JsonDict, safe_value) if isinstance(safe_value, dict) else {}
+
+
+def _float_value(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return 0.0
 
 
 def _json_list(value: object) -> list[JsonDict]:
