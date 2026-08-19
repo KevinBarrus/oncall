@@ -10,4 +10,4 @@
 ## 3. 验证与追踪
 
 - [x] 3.1 添加同评分重放、不同评分、并发提交和跨 owner 隔离测试
-- [ ] 3.2 运行目标 pytest、Ruff、Pyright、Alembic upgrade 和 OpenSpec 校验，并同步 problem tracker
+- [x] 3.2 运行目标 pytest、Ruff、Pyright、Alembic upgrade 和 OpenSpec 校验，并同步 problem tracker
