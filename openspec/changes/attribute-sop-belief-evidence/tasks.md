@@ -12,4 +12,4 @@
 ## 3. 验证与追踪
 
 - [x] 3.1 添加测试，覆盖候选不更新后验、计划引用更新、曝光和结果归因字段、owner 隔离。
-- [ ] 3.2 运行目标 pytest、Ruff、Pyright、Alembic upgrade 和 OpenSpec 校验，并同步 problem tracker。
+- [x] 3.2 运行目标 pytest、Ruff、Pyright、Alembic upgrade 和 OpenSpec 校验，并同步 problem tracker。
