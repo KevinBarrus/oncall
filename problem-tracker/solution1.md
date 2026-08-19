@@ -71,9 +71,10 @@
 
 ## 问题10的解决方案：拆分真实文档 baseline 与 answer-injection 检查
 
-- 使用原始 gold 文档作为真实文档 baseline，衡量生成模型面对文档上下文时的表现。
-- 将标准答案直接注入上下文的结果改名为 `answer-injection sanity check`，不再称作生成上界。
-- 当前待实现。
+- 使用 QA 的人工来源标签读取原始团队文档，作为 `goldDocumentBaseline`，衡量生成模型面对真实文档上下文时的表现。
+- 标准答案直接注入上下文的结果独立命名为 `answerInjectionSanityCheck`，仅检查生成和 Judge 流程，不再称作生成上界。
+- 报告表格展示 gold-document baseline，并单独输出 answer-injection 检查结果。
+- 已补充测试，确保 gold-document baseline 不读取标准答案作为上下文。
 
 ## 问题11的解决方案：将 SOP belief 迁移到 SQLite Repository
 
@@ -99,4 +100,4 @@
 
 - 问题1～问题4已完成代码实现并补充测试。
 - 问题6已完成真实 HTTP/SSE 聊天链路评测入口并补充解析测试。
-- 问题7～问题9已完成当前 fixture 范围内的修复；问题10～问题13保留为后续修复项。
+- 问题7～问题10已完成当前 fixture 范围内的修复；问题11～问题13保留为后续修复项。

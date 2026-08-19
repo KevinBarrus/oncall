@@ -12,8 +12,9 @@ Metrics:
   - Latency:  retrieval ms, generation ms per question
   - Error taxonomy:  data-gap / chunking / ranking / generation
 
-Clean-room baseline:
-  Inject the ground-truth document text directly as context to measure generation upper bound.
+Baselines:
+  - gold-document baseline: inject original source documents as context.
+  - answer-injection sanity check: inject the standard answer as context.
 
 Usage:
     uv run python tests/ragas_evaluation.py
@@ -33,7 +34,7 @@ import re
 import sys
 import time
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,6 +96,7 @@ SOURCE_LABELS = {
     "service-topology.md": "服务拓扑",
     "incident-postmortems.md": "历史故障复盘",
 }
+GOLD_DOCUMENTS = {label: _DATA_DIR / filename for filename, label in SOURCE_LABELS.items()}
 
 # ---------------------------------------------------------------------------
 # key loading
@@ -617,16 +619,19 @@ def _classify_error(
 
 
 # ---------------------------------------------------------------------------
-# clean-room baseline
+# baselines
 # ---------------------------------------------------------------------------
 
 
-async def _clean_room_baseline(
+async def _evaluate_generation_baseline(
     model: Any,
     judge_model: Any,
     qa_pairs: list[dict[str, Any]],
+    *,
+    name: str,
+    context_for: Callable[[dict[str, Any]], list[str]],
 ) -> dict[str, object]:
-    """Measure generation upper bound by injecting ground truth as context."""
+    """Run a generation-only baseline with an explicitly named context source."""
     results: list[dict[str, object]] = []
     scores_agg: dict[str, list[float]] = defaultdict(list)
 
@@ -634,10 +639,10 @@ async def _clean_room_baseline(
         question = cast(str, qa["question"])
         ground_truth = cast(str, qa["ground_truth"])
 
-        # Use ground truth itself as "perfect context"
-        answer, gen_ms = await _generate_answer(model, question, [ground_truth])
+        contexts = context_for(qa)
+        answer, gen_ms = await _generate_answer(model, question, contexts)
         llm_scores, judge_errors = await _score_one_question(
-            judge_model, question, answer, [ground_truth], ground_truth
+            judge_model, question, answer, contexts, ground_truth
         )
 
         for k, v in llm_scores.items():
@@ -648,6 +653,7 @@ async def _clean_room_baseline(
             {
                 "question": question[:120],
                 "answer": answer[:800],
+                "contextCount": len(contexts),
                 "scores": llm_scores,
                 "judgeErrors": judge_errors,
                 "latencyGenMs": round(gen_ms, 1),
@@ -657,7 +663,22 @@ async def _clean_room_baseline(
     averages = {
         k: round(sum(v) / len(v), 4) if v else None for k, v in scores_agg.items()
     }
-    return {"averages": averages, "perItem": results}
+    return {"name": name, "averages": averages, "perItem": results}
+
+
+def _gold_document_contexts(qa: dict[str, Any]) -> list[str]:
+    """Return original source documents selected by the QA's human gold labels."""
+    contexts: list[str] = []
+    for source in _expected_sources(qa):
+        path = GOLD_DOCUMENTS.get(source)
+        if path is None:
+            raise ValueError(f"No gold document fixture for source: {source}")
+        contexts.append(path.read_text(encoding="utf-8"))
+    return contexts
+
+
+def _answer_injection_contexts(qa: dict[str, Any]) -> list[str]:
+    return [cast(str, qa["ground_truth"])]
 
 
 # ---------------------------------------------------------------------------
@@ -1054,16 +1075,29 @@ async def run_evaluation(
         print(f"  Errors: {dict(error_dist)}")
 
     # -------------------------------------------------------------------
-    # clean-room baseline
+    # generation baselines
     # -------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"  [{len(strategies)+3}/{len(strategies)+2}] Clean-room baseline (gold context)")
+    print(f"  [{len(strategies)+3}/{len(strategies)+2}] Gold-document baseline")
     print(f"{'='*60}")
-    clean_room = await _clean_room_baseline(chat_model, deepseek_judge, qa_pairs)
-    clean_room_averages = cast(dict[str, object], clean_room["averages"])
+    gold_document_baseline = await _evaluate_generation_baseline(
+        chat_model,
+        deepseek_judge,
+        qa_pairs,
+        name="gold-document baseline",
+        context_for=_gold_document_contexts,
+    )
+    gold_document_averages = cast(dict[str, object], gold_document_baseline["averages"])
     print(
-        f"  AR={_score_display(clean_room_averages.get('answer_relevancy'))}  "
-        f"F={_score_display(clean_room_averages.get('faithfulness'))}"
+        f"  AR={_score_display(gold_document_averages.get('answer_relevancy'))}  "
+        f"F={_score_display(gold_document_averages.get('faithfulness'))}"
+    )
+    answer_injection = await _evaluate_generation_baseline(
+        chat_model,
+        deepseek_judge,
+        qa_pairs,
+        name="answer-injection sanity check",
+        context_for=_answer_injection_contexts,
     )
 
     end_to_end: dict[str, object] | None = None
@@ -1100,7 +1134,8 @@ async def run_evaluation(
             }
             for sid, run in eval_runs.items()
         },
-        "cleanRoom": clean_room,
+        "goldDocumentBaseline": gold_document_baseline,
+        "answerInjectionSanityCheck": answer_injection,
         **({"endToEnd": end_to_end} if end_to_end is not None else {}),
         "lowScoreSamples": _low_score_samples(eval_runs, top_n=5),
     }
@@ -1183,7 +1218,8 @@ async def _discover_knowledge_base_id() -> str | None:
 
 def _print_comparison_report(payload: dict[str, object]) -> None:
     strategies_data = cast(dict[str, object], payload.get("strategies", {}))
-    clean_room = cast(dict[str, object], payload.get("cleanRoom", {}))
+    gold_document = cast(dict[str, object], payload.get("goldDocumentBaseline", {}))
+    answer_injection = cast(dict[str, object], payload.get("answerInjectionSanityCheck", {}))
     config = cast(dict[str, object], payload.get("config", {}))
 
     print()
@@ -1221,7 +1257,7 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     header = "  │ {:<20}".format("指标")
     for sid in present_strategies:
         header += " │ {:>12}".format(sid[:12])
-    header += " │ {:>12} │".format("Clean-room")
+    header += " │ {:>12} │".format("Gold docs")
     print(header)
     # Dynamic separator
     sep = "  ├" + "─" * 21 + "┼" + "─" * 14 + "┼".join(["─" * 12] * (n_cols - 1))
@@ -1250,10 +1286,10 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
                     row += " │ {:>12}".format("—")
             else:
                 row += " │ {:>12}".format("—")
-        # Clean-room column (only for LLM metrics)
+        # Gold-document baseline column (only for LLM metrics)
         if is_llm:
-            cr_avg = cast(dict[str, object], clean_room.get("averages", {}))
-            cr_val = cr_avg.get(key)
+            gold_averages = cast(dict[str, object], gold_document.get("averages", {}))
+            cr_val = gold_averages.get(key)
             if isinstance(cr_val, (int, float)):
                 row += " │ {:>12.4f}".format(float(cr_val))
             else:
@@ -1270,7 +1306,12 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     bottom += "─" * 14 + "┘"
     print(bottom)
     print()
-    print("  Clean-room = 直接把标准答案作为上下文喂给 LLM，衡量生成质量上界")
+    answer_injection_averages = cast(dict[str, object], answer_injection.get("averages", {}))
+    print("  Gold docs = 直接提供原始标注文档，衡量生成模型面对真实文档上下文的表现")
+    print(
+        "  Answer-injection sanity check = 直接提供标准答案，仅检查生成和 Judge 流程；"
+        f"AR={_score_display(answer_injection_averages.get('answer_relevancy'))}"
+    )
     print("  LLM 指标 (CP/CR/F/AR) 用 DeepSeek 评分；MRR/NDCG 使用人工来源相关性，FactR@5 使用人工原子事实")
     print("  CP@3 = 仅取 top-3 chunk 的 Context Precision（减少 small-KB 场景下噪音 chunk 的惩罚）")
     print()
@@ -1357,6 +1398,15 @@ class TestRagasEvaluation:
         assert sum(distribution.values()) == len(_load_qa_pairs())
         assert any(key.startswith("answerable:") for key in distribution)
         assert any(key.startswith("unanswerable:") for key in distribution)
+
+    def test_gold_document_baseline_uses_source_fixture_not_standard_answer(self) -> None:
+        qa = _load_qa_pairs()[0]
+        contexts = _gold_document_contexts(qa)
+        assert "团队告警响应规范 v2.7" in contexts[0]
+        assert qa["ground_truth"] not in contexts[0]
+        assert _gold_document_contexts(
+            {"reference": "无", "ground_truth": "no answer"}
+        ) == []
 
     def test_token_overlap(self) -> None:
         assert _token_overlap("nginx 502 error", "nginx 502 bad gateway") > 0.1
