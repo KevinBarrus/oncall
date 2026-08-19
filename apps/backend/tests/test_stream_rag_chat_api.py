@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx
@@ -272,6 +273,21 @@ async def test_same_session_chat_requests_are_serialized() -> None:
         "max_active": 0,
     }
 
+    class LeaseRepository:
+        held = False
+
+        async def acquire_execution_lease(self, **_kwargs: object) -> bool:
+            if self.held:
+                return False
+            self.held = True
+            return True
+
+        async def release_execution_lease(self, **_kwargs: object) -> bool:
+            self.held = False
+            return True
+
+    repository = LeaseRepository()
+
     class LockProbeService(ChatStreamingService):
         async def _stream_message_unlocked(
             self, **_kwargs: object
@@ -294,7 +310,7 @@ async def test_same_session_chat_requests_are_serialized() -> None:
     )
     services = [
         LockProbeService(
-            repositories=cast(Any, object()),
+            repositories=cast(Any, SimpleNamespace(chat=repository)),
             agent_runner=cast(Any, object()),
         )
         for _ in range(2)
@@ -316,10 +332,12 @@ async def test_same_session_chat_requests_are_serialized() -> None:
     second = asyncio.create_task(consume(services[1]))
     await asyncio.sleep(0)
     assert state["max_active"] == 1
-    assert not second.done()
+    second_events = await second
+    assert second_events[0]["type"] == "error"
+    assert cast(dict[str, object], second_events[0]["error"])["code"] == "CHAT_SESSION_BUSY"
 
     cast(asyncio.Event, state["release"]).set()
-    await asyncio.gather(first, second)
+    await first
     assert state["max_active"] == 1
 
 
@@ -676,6 +694,12 @@ class FailingAssistantChatRepository:
         **_kwargs: object,
     ) -> ChatSessionRecord | None:
         return self.session
+
+    async def acquire_execution_lease(self, **_kwargs: object) -> bool:
+        return True
+
+    async def release_execution_lease(self, **_kwargs: object) -> bool:
+        return True
 
     async def update_session_title(
         self,

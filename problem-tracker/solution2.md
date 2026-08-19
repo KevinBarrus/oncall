@@ -80,6 +80,8 @@
 
 - 在会话记录增加版本号或租约字段，使用条件更新实现数据库 CAS。
 - 获取失败时返回明确的会话繁忙语义，覆盖多 Service 实例和多进程竞争测试。
+- 已完成：`chat_sessions` 增加 lease token 和过期时间；Repository 以 owner、session 和过期条件原子获取租约，并按 token 释放
+- 已完成：聊天流在执行 Agent 前获取 15 分钟租约，冲突时返回 `CHAT_SESSION_BUSY`，双 Repository 并发测试覆盖互斥和错误 token 不可释放
 
 ## 问题14的解决方案：增加历史归档与保留策略
 

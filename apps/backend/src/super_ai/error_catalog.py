@@ -1,6 +1,7 @@
 """Shared API and SSE error catalog."""
 
 ERROR_DEFINITIONS = {
+    "CHAT_SESSION_BUSY": ("business", 409, "当前会话正在处理中，请等待本轮回答完成。"),
     "CHAT_CONTEXT_LIMIT_REACHED": (
         "business",
         409,

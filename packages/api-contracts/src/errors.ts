@@ -7,6 +7,11 @@ export interface ApiErrorCodeDefinition {
 }
 
 export const API_ERROR_CODES = {
+  CHAT_SESSION_BUSY: {
+    category: "business",
+    httpStatus: 409,
+    message: "当前会话正在处理中，请等待本轮回答完成。"
+  },
   CHAT_CONTEXT_LIMIT_REACHED: {
     category: "business",
     httpStatus: 409,

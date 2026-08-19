@@ -51,6 +51,7 @@ def test_alembic_upgrade_creates_memory_tables(tmp_path: Path) -> None:
         "ix_document_index_tasks_owner_document_created_at",
         "ix_document_index_tasks_owner_status",
         "ix_chat_sessions_owner_updated_at",
+        "ix_chat_sessions_execution_lease_expires_at",
         "ix_chat_messages_owner_session_created_at",
         "ix_aiops_diagnostic_tasks_owner_created_at",
         "ix_chat_messages_session_created_at",
@@ -74,6 +75,9 @@ def test_memory_metadata_exposes_required_tables_and_json_columns() -> None:
     assert all("owner_user_id" in tables[table_name].c for table_name in REQUIRED_MEMORY_TABLES)
     assert "failure_reason" in tables["document_index_tasks"].c
     assert "retry_of_task_id" in tables["document_index_tasks"].c
+    assert {"execution_lease_token", "execution_lease_expires_at"} <= set(
+        tables["chat_sessions"].c.keys()
+    )
     assert isinstance(tables["chat_messages"].c["metadata"].type, JSON)
     assert isinstance(tables["aiops_diagnostic_tasks"].c["input_payload"].type, JSON)
     assert isinstance(tables["aiops_diagnostic_reports"].c["payload"].type, JSON)

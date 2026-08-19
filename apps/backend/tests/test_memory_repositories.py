@@ -141,6 +141,59 @@ async def test_chat_repository_denies_cross_tenant_parent_writes(
 
 
 @pytest.mark.asyncio
+async def test_chat_execution_lease_is_exclusive_and_token_scoped(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        session_factory = create_memory_session_factory(engine)
+        first_repository = SQLiteChatMemoryRepository(session_factory)
+        second_repository = SQLiteChatMemoryRepository(session_factory)
+        await first_repository.create_session(
+            owner_user_id="user-a",
+            session_id="session-a",
+            title="Lease test",
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+        acquired = await asyncio.gather(
+            first_repository.acquire_execution_lease(
+                owner_user_id="user-a",
+                session_id="session-a",
+                token="first-token",
+                expires_at=expires_at,
+            ),
+            second_repository.acquire_execution_lease(
+                owner_user_id="user-a",
+                session_id="session-a",
+                token="second-token",
+                expires_at=expires_at,
+            ),
+        )
+        wrong_token_released = await first_repository.release_execution_lease(
+            owner_user_id="user-a",
+            session_id="session-a",
+            token="wrong-token",
+        )
+        first_token_released = await first_repository.release_execution_lease(
+            owner_user_id="user-a",
+            session_id="session-a",
+            token="first-token",
+        )
+        second_token_released = await second_repository.release_execution_lease(
+            owner_user_id="user-a",
+            session_id="session-a",
+            token="second-token",
+        )
+    finally:
+        await engine.dispose()
+
+    assert acquired.count(True) == 1
+    assert wrong_token_released is False
+    assert first_token_released != second_token_released
+
+
+@pytest.mark.asyncio
 async def test_chat_repository_updates_clears_and_deletes_sessions_by_owner(
     migrated_database_url: str,
 ) -> None:

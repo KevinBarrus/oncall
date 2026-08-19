@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 from uuid import uuid4
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, or_, select, update
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -109,6 +110,44 @@ class SQLiteChatMemoryRepository:
         async with self._session_factory() as session:
             row = (await session.scalars(stmt)).one_or_none()
         return _chat_session_record(row) if row is not None else None
+
+    async def acquire_execution_lease(
+        self, *, owner_user_id: str, session_id: str, token: str, expires_at: datetime
+    ) -> bool:
+        now = utc_now()
+        statement = (
+            update(ChatSessionModel)
+            .where(
+                ChatSessionModel.id == session_id,
+                ChatSessionModel.owner_user_id == owner_user_id,
+                or_(
+                    ChatSessionModel.execution_lease_expires_at.is_(None),
+                    ChatSessionModel.execution_lease_expires_at < now,
+                ),
+            )
+            .values(execution_lease_token=token, execution_lease_expires_at=expires_at)
+        )
+        async with self._session_factory() as session:
+            result = cast(CursorResult[Any], await session.execute(statement))
+            await session.commit()
+        return result.rowcount == 1
+
+    async def release_execution_lease(
+        self, *, owner_user_id: str, session_id: str, token: str
+    ) -> bool:
+        statement = (
+            update(ChatSessionModel)
+            .where(
+                ChatSessionModel.id == session_id,
+                ChatSessionModel.owner_user_id == owner_user_id,
+                ChatSessionModel.execution_lease_token == token,
+            )
+            .values(execution_lease_token=None, execution_lease_expires_at=None)
+        )
+        async with self._session_factory() as session:
+            result = cast(CursorResult[Any], await session.execute(statement))
+            await session.commit()
+        return result.rowcount == 1
 
     async def update_session_title(
         self,

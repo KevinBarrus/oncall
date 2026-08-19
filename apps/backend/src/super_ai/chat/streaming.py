@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from time import monotonic
 from typing import Any, Literal, Protocol, TypedDict, cast
@@ -57,7 +55,7 @@ from super_ai.tool_registry import ToolRegistry
 
 ToolCallStatus = Literal["started", "delta", "completed", "failed"]
 logger = logging.getLogger(__name__)
-_SESSION_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_CHAT_EXECUTION_LEASE_SECONDS = 900
 _CROSS_TURN_AUDIT_LIMIT = 6
 _CROSS_TURN_CITATION_LIMIT = 8
 _CROSS_TURN_ITEM_LIMIT = 400
@@ -180,11 +178,20 @@ class ChatStreamingService:
         metadata: JsonDict | None = None,
         accessible_knowledge_base_ids: Sequence[str],
     ) -> AsyncIterator[dict[str, object]]:
-        """Serialize all mutations and Agent work for one chat session."""
-        # ponytail: one-process lock map; use a database CAS when workers share sessions.
-        lock_key = f"{owner_user_id}:{session.id}"
-        lock = _SESSION_LOCKS.setdefault(lock_key, asyncio.Lock())
-        async with lock:
+        """Serialize all mutations and Agent work across service processes."""
+        token = uuid4().hex
+        acquired = await self._repositories.chat.acquire_execution_lease(
+            owner_user_id=owner_user_id,
+            session_id=session.id,
+            token=token,
+            expires_at=(
+                datetime.now(timezone.utc) + timedelta(seconds=_CHAT_EXECUTION_LEASE_SECONDS)
+            ),
+        )
+        if not acquired:
+            yield _error_event("CHAT_SESSION_BUSY")
+            return
+        try:
             async for event in self._stream_message_unlocked(
                 owner_user_id=owner_user_id,
                 session=session,
@@ -193,6 +200,10 @@ class ChatStreamingService:
                 accessible_knowledge_base_ids=accessible_knowledge_base_ids,
             ):
                 yield event
+        finally:
+            await self._repositories.chat.release_execution_lease(
+                owner_user_id=owner_user_id, session_id=session.id, token=token
+            )
 
     async def _stream_message_unlocked(
         self,

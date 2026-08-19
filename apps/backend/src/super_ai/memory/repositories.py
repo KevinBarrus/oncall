@@ -500,6 +500,14 @@ class ChatMemoryRepository(Protocol):
         """Get one message by id within the owner scope."""
         ...
 
+    async def acquire_execution_lease(
+        self, *, owner_user_id: str, session_id: str, token: str, expires_at: datetime
+    ) -> bool: ...
+
+    async def release_execution_lease(
+        self, *, owner_user_id: str, session_id: str, token: str
+    ) -> bool: ...
+
 
 class UserChatConfigurationRepository(Protocol):
     """Repository contract for owner-scoped chat prompt and Skill choices."""
