@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -19,6 +21,7 @@ from super_ai.project_config import (
 )
 
 DEFAULT_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///./var/memory.sqlite3"
+SQLITE_BUSY_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +52,15 @@ def create_memory_engine(
     resolved_url = settings.database_url if settings is not None else database_url
     if resolved_url is None:
         resolved_url = DEFAULT_MEMORY_DATABASE_URL
-    return create_async_engine(resolved_url, echo=echo)
+    if not resolved_url.startswith("sqlite"):
+        return create_async_engine(resolved_url, echo=echo)
+    engine = create_async_engine(
+        resolved_url,
+        echo=echo,
+        connect_args={"timeout": SQLITE_BUSY_TIMEOUT_SECONDS},
+    )
+    event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
+    return engine
 
 
 def create_memory_session_factory(
@@ -57,3 +68,14 @@ def create_memory_session_factory(
 ) -> async_sessionmaker[AsyncSession]:
     """Create an async session factory for repository implementations."""
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def _configure_sqlite_connection(dbapi_connection: object, _connection_record: object) -> None:
+    connection = cast(Any, dbapi_connection)
+    cursor = connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_SECONDS * 1000}")
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()

@@ -74,6 +74,7 @@
 
 - 在 SQLite 新连接上启用 `foreign_keys=ON`、WAL 和合理的 `busy_timeout`。
 - 为并发读写、锁等待和外键约束补充 Repository 级测试，并记录单机 SQLite 的写入吞吐边界。
+- 已完成：统一引擎工厂为 SQLite 设置 5 秒连接等待，并在每条连接启用 `foreign_keys=ON`、`busy_timeout=5000` 和 WAL；文件数据库回归测试验证 pragma 与非法外键拒绝
 
 ## 问题13的解决方案：升级为跨进程会话互斥
 
