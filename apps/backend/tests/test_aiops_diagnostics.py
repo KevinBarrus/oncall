@@ -253,10 +253,21 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
             mime_type="text/markdown",
             content_hash="sop-hash-v1",
         )
+        await repositories.documents.create_document(
+            owner_user_id="user-a",
+            document_id="document_candidate",
+            knowledge_base_id="kb_user-a",
+            filename="worker-cpu-candidate.md",
+            size_bytes=100,
+            mime_type="text/markdown",
+            content_hash="candidate-hash-v1",
+        )
         embedding = FakeEmbeddingModel()
         retrieval = KnowledgeRetrievalTool(
             embedding_model=embedding,
-            vector_store=FakeVectorStore([_sop_hit("user-a")]),
+            vector_store=FakeVectorStore(
+                [_sop_hit("user-a"), _sop_hit("user-a", document_id="document_candidate")]
+            ),
             rerank_model=FakeRerankModel(),
         )
         mcp = FakeMcpClient()
@@ -326,11 +337,29 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
         belief_states = await cast(Any, repositories.sop_beliefs).list_states(
             owner_user_id="user-a",
             tenant_id="user-a",
-            document_versions={"document_sop": "sop-hash-v1"},
+            document_versions={
+                "document_sop": "sop-hash-v1",
+                "document_candidate": "candidate-hash-v1",
+            },
         )
         belief_evidence = await cast(Any, repositories.sop_beliefs).list_evidence_for_task(
             owner_user_id="user-a",
             tenant_id="user-a",
+            task_id=task.id,
+        )
+        other_owner_exposures = await cast(Any, repositories.sop_beliefs).list_exposures_for_task(
+            owner_user_id="user-b",
+            tenant_id="user-b",
+            task_id=task.id,
+        )
+        other_owner_states = await cast(Any, repositories.sop_beliefs).list_states(
+            owner_user_id="user-b",
+            tenant_id="user-b",
+            document_versions={"document_sop": "sop-hash-v1"},
+        )
+        other_owner_evidence = await cast(Any, repositories.sop_beliefs).list_evidence_for_task(
+            owner_user_id="user-b",
+            tenant_id="user-b",
             task_id=task.id,
         )
     finally:
@@ -380,13 +409,21 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
     assert cases[0].index_task_id
     assert scheduler.scheduled == [("user-a", cases[0].index_task_id)]
     assert [(item.document_id, item.document_version) for item in exposures] == [
-        ("document_sop", "sop-hash-v1")
+        ("document_sop", "sop-hash-v1"),
+        ("document_candidate", "candidate-hash-v1"),
     ]
-    assert exposures[0].evidence_strength == "candidate"
+    assert [(item.attribution_stage, item.evidence_strength) for item in exposures] == [
+        ("retrieval", "candidate"),
+        ("retrieval", "candidate"),
+    ]
     assert [state.observations for state in belief_states] == [1]
+    assert [state.document_id for state in belief_states] == ["document_sop"]
     assert [(item.document_id, item.attribution_stage, item.evidence_strength) for item in belief_evidence] == [
         ("document_sop", "plan", "planned")
     ]
+    assert other_owner_exposures == []
+    assert other_owner_states == []
+    assert other_owner_evidence == []
     events = [
         json.loads(record.message) for record in caplog.records if record.message.startswith("{")
     ]
@@ -705,15 +742,15 @@ async def test_diagnostic_evidence_repository_rejects_cross_tenant_step(
         await engine.dispose()
 
 
-def _sop_hit(owner_user_id: str) -> VectorSearchResult:
+def _sop_hit(owner_user_id: str, *, document_id: str = "document_sop") -> VectorSearchResult:
     return VectorSearchResult(
-        chunk_id="chunk_sop",
-        document_id="document_sop",
+        chunk_id=f"chunk_{document_id}",
+        document_id=document_id,
         knowledge_base_id=f"kb_{owner_user_id}",
         owner_user_id=owner_user_id,
         tenant_id=owner_user_id,
         content="Check CPU saturation and query worker logs before mitigation.",
-        source="worker-cpu-sop.md",
+        source=f"{document_id}.md",
         created_at=1,
         metadata={"kind": "sop"},
         score=0.92,
