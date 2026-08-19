@@ -218,6 +218,20 @@ class SopBeliefEvidenceRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SopBeliefExposureRecord:
+    id: str
+    owner_user_id: str
+    tenant_id: str
+    task_id: str
+    document_id: str
+    document_version: str
+    attribution_stage: str
+    evidence_strength: str
+    metadata: JsonDict
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ReportEvidenceLinkRecord:
     id: str
     owner_user_id: str
@@ -1252,6 +1266,32 @@ class SopBeliefRepository(Protocol):
         task_id: str,
     ) -> list[SopBeliefEvidenceRecord]:
         """List the scoped evidence that was recorded for one diagnostic task."""
+        ...
+
+    async def record_exposure(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        document_id: str,
+        document_version: str,
+        attribution_stage: str,
+        evidence_strength: str,
+        metadata: JsonDict | None = None,
+        created_at: datetime | None = None,
+    ) -> SopBeliefExposureRecord:
+        """Persist a candidate exposure without changing posterior state."""
+        ...
+
+    async def list_exposures_for_task(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+    ) -> list[SopBeliefExposureRecord]:
+        """List candidate exposures within the caller's scope."""
         ...
 
 

@@ -663,6 +663,42 @@ async def test_sop_belief_repository_scopes_versions_and_records_evidence(
     assert cross_tenant == []
 
 
+@pytest.mark.asyncio
+async def test_sop_belief_exposure_is_scoped_and_does_not_create_state(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repository = SQLiteSopBeliefRepository(create_memory_session_factory(engine))
+        exposure = await repository.record_exposure(
+            owner_user_id="user-a",
+            tenant_id="user-a",
+            task_id="task-1",
+            document_id="doc-1",
+            document_version="hash-v1",
+            attribution_stage="retrieval",
+            evidence_strength="candidate",
+            metadata={"rank": 1},
+        )
+        visible = await repository.list_exposures_for_task(
+            owner_user_id="user-a", tenant_id="user-a", task_id="task-1"
+        )
+        hidden = await repository.list_exposures_for_task(
+            owner_user_id="user-b", tenant_id="user-b", task_id="task-1"
+        )
+        states = await repository.list_states(
+            owner_user_id="user-a", tenant_id="user-a", document_versions={"doc-1": "hash-v1"}
+        )
+    finally:
+        await engine.dispose()
+
+    assert exposure.attribution_stage == "retrieval"
+    assert exposure.evidence_strength == "candidate"
+    assert [item.id for item in visible] == [exposure.id]
+    assert hidden == []
+    assert states == []
+
+
 def test_repository_boundary_exposes_protocols_and_records_only() -> None:
     assert inspect.isclass(ChatMemoryRepository)
     assert all(

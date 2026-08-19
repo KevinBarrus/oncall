@@ -714,6 +714,33 @@ class SopBeliefEvidenceModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SopBeliefExposureModel(Base):
+    """Candidate SOP exposure that never changes a posterior state."""
+
+    __tablename__ = "sop_belief_exposures"
+    __table_args__ = (
+        Index(
+            "ix_sop_belief_exposures_scope_task",
+            "owner_user_id",
+            "tenant_id",
+            "task_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    document_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    attribution_stage: Mapped[str] = mapped_column(String(40), nullable=False)
+    evidence_strength: Mapped[str] = mapped_column(String(40), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReportEvidenceLinkModel(Base):
     """Owner-scoped provenance edge from a diagnostic report to evidence."""
 

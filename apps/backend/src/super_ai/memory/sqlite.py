@@ -26,6 +26,7 @@ from super_ai.memory.models import (
     KnowledgeDocumentModel,
     ReportEvidenceLinkModel,
     SopBeliefEvidenceModel,
+    SopBeliefExposureModel,
     SopBeliefStateModel,
     ToolCallAuditModel,
     UserChatConfigurationModel,
@@ -49,6 +50,7 @@ from super_ai.memory.repositories import (
     MemoryRepositories,
     ReportEvidenceLinkRecord,
     SopBeliefEvidenceRecord,
+    SopBeliefExposureRecord,
     SopBeliefStateRecord,
     TenantScopeError,
     TimeRangeFilter,
@@ -1673,6 +1675,56 @@ class SQLiteSopBeliefRepository:
             rows = list((await session.scalars(statement)).all())
         return [_sop_belief_evidence_record(row) for row in rows]
 
+    async def record_exposure(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+        document_id: str,
+        document_version: str,
+        attribution_stage: str,
+        evidence_strength: str,
+        metadata: JsonDict | None = None,
+        created_at: datetime | None = None,
+    ) -> SopBeliefExposureRecord:
+        row = SopBeliefExposureModel(
+            id=f"sop_exposure_{uuid4().hex}",
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            document_id=document_id,
+            document_version=document_version,
+            attribution_stage=attribution_stage,
+            evidence_strength=evidence_strength,
+            metadata_json=metadata or {},
+            created_at=created_at or utc_now(),
+        )
+        async with self._session_factory() as session:
+            session.add(row)
+            await session.commit()
+        return _sop_belief_exposure_record(row)
+
+    async def list_exposures_for_task(
+        self,
+        *,
+        owner_user_id: str,
+        tenant_id: str,
+        task_id: str,
+    ) -> list[SopBeliefExposureRecord]:
+        statement = (
+            select(SopBeliefExposureModel)
+            .where(
+                SopBeliefExposureModel.owner_user_id == owner_user_id,
+                SopBeliefExposureModel.tenant_id == tenant_id,
+                SopBeliefExposureModel.task_id == task_id,
+            )
+            .order_by(SopBeliefExposureModel.created_at.asc(), SopBeliefExposureModel.id.asc())
+        )
+        async with self._session_factory() as session:
+            rows = list((await session.scalars(statement)).all())
+        return [_sop_belief_exposure_record(row) for row in rows]
+
 
 def create_sqlite_memory_repositories(
     session_factory: async_sessionmaker[AsyncSession],
@@ -2126,6 +2178,21 @@ def _sop_belief_evidence_record(row: SopBeliefEvidenceModel) -> SopBeliefEvidenc
         total_tokens=row.total_tokens,
         turns=row.turns,
         elapsed_seconds=row.elapsed_seconds,
+        metadata=_json_dict(row.metadata_json),
+        created_at=_ensure_utc(row.created_at),
+    )
+
+
+def _sop_belief_exposure_record(row: SopBeliefExposureModel) -> SopBeliefExposureRecord:
+    return SopBeliefExposureRecord(
+        id=row.id,
+        owner_user_id=row.owner_user_id,
+        tenant_id=row.tenant_id,
+        task_id=row.task_id,
+        document_id=row.document_id,
+        document_version=row.document_version,
+        attribution_stage=row.attribution_stage,
+        evidence_strength=row.evidence_strength,
         metadata=_json_dict(row.metadata_json),
         created_at=_ensure_utc(row.created_at),
     )
