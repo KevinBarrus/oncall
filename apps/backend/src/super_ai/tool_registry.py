@@ -102,16 +102,6 @@ class ToolRegistry:
         self, client: LocalMcpClient, *, with_langchain_tools: bool = True
     ) -> None:
         definitions = await client.discover_tools()
-        get_tools = getattr(client, "get_langchain_tools_by_server", None)
-        langchain_tools: list[tuple[str, Any]] = (
-            cast(
-                list[tuple[str, Any]],
-                await cast(Callable[[], Awaitable[object]], get_tools)(),
-            )
-            if with_langchain_tools and callable(get_tools)
-            else []
-        )
-        tool_map = {(server_id, tool.name): tool for server_id, tool in langchain_tools}
         counts: dict[str, int] = {}
         for definition in definitions:
             counts[definition.name] = counts.get(definition.name, 0) + 1
@@ -123,8 +113,9 @@ class ToolRegistry:
                 if qualified
                 else definition.name
             )
-            original = tool_map.get((definition.server_name, definition.name))
-            wrapped = self._wrap_tool(original, public_name) if original is not None else None
+            wrapped = self._mcp_langchain_tool(
+                public_name, definition.description, definition.input_schema
+            ) if with_langchain_tools else None
             self._register(
                 ToolDefinition(
                     tool_id=f"mcp:{definition.server_name}:{definition.name}",
@@ -168,18 +159,17 @@ class ToolRegistry:
             raise ValueError(f"Duplicate Agent tool name: {definition.name}")
         self._entries[definition.name] = _ToolEntry(definition, executor, langchain_tool)
 
-    def _wrap_tool(self, tool: Any, public_name: str) -> StructuredTool | None:
-        if tool is None:
-            return None
-
+    def _mcp_langchain_tool(
+        self, public_name: str, description: str, input_schema: dict[str, Any]
+    ) -> StructuredTool:
         async def invoke(**arguments: object) -> object:
             return await self.execute(public_name, arguments)
 
         return StructuredTool.from_function(
             coroutine=invoke,
             name=public_name,
-            description=tool.description,
-            args_schema=tool.args_schema,
+            description=description,
+            args_schema=input_schema,
         )
 
 

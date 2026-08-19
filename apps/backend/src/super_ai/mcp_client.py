@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import monotonic
-from typing import Any, cast
+from typing import Any
 
 import httpx
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
@@ -19,6 +19,7 @@ from mcp.client.streamable_http import streamable_http_client
 from super_ai.observability import elapsed_ms, emit_event
 
 logger = logging.getLogger(__name__)
+_TOOL_DISCOVERY_TTL_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,13 @@ class McpServerConnection:
 
 class McpClientError(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class _McpSession:
+    lock: asyncio.Lock
+    stack: AsyncExitStack | None = None
+    session: ClientSession | None = None
 
 
 def create_current_time_tool() -> Any:
@@ -78,32 +86,16 @@ class LocalMcpClient:
                 )
             ]
         self._connections = tuple(configured)
-
-    async def get_langchain_tools(self) -> list[Any]:
-        await self.discover_tools()
-        return [tool for _, tool in await self.get_langchain_tools_by_server()]
-
-    async def get_langchain_tools_by_server(self) -> list[tuple[str, Any]]:
-        tools: list[tuple[str, Any]] = []
-        for connection in self._connections:
-            client = MultiServerMCPClient(
-                cast(
-                    Any,
-                    {
-                        connection.name: {
-                            "transport": (
-                                "http" if connection.transport == "streamable_http" else "sse"
-                            ),
-                            "url": connection.url,
-                        }
-                    },
-                ),
-                handle_tool_errors=False,
-            )
-            tools.extend((connection.name, tool) for tool in await client.get_tools())
-        return tools
+        self._sessions = {connection.name: _McpSession(asyncio.Lock()) for connection in configured}
+        self._discovered_tools: tuple[McpToolDefinition, ...] | None = None
+        self._discovered_at = 0.0
 
     async def discover_tools(self) -> list[McpToolDefinition]:
+        if (
+            self._discovered_tools is not None
+            and monotonic() - self._discovered_at < _TOOL_DISCOVERY_TTL_SECONDS
+        ):
+            return list(self._discovered_tools)
         definitions: list[McpToolDefinition] = []
         for connection in self._connections:
             result = await self._run_connection(
@@ -119,7 +111,14 @@ class LocalMcpClient:
                         connection.name,
                     )
                 )
+        self._discovered_tools = tuple(definitions)
+        self._discovered_at = monotonic()
         return definitions
+
+    async def aclose(self) -> None:
+        for entry in self._sessions.values():
+            async with entry.lock:
+                await self._close_session(entry)
 
     async def readiness(self) -> dict[str, object]:
         try:
@@ -244,59 +243,59 @@ class LocalMcpClient:
         connection: McpServerConnection,
         operation: Callable[[Any], Awaitable[Any]],
     ) -> Any:
-        error: Exception | None = None
-        for attempt in range(connection.retries + 1):
-            try:
-                if connection.transport == "streamable_http":
-                    return await self._run_streamable_http(connection, operation)
-                return await self._run_sse(connection, operation)
-            except Exception as exc:
-                error = exc
-                if attempt < connection.retries:
-                    await asyncio.sleep(0.2 * (attempt + 1))
+        entry = self._sessions[connection.name]
+        async with entry.lock:
+            error: Exception | None = None
+            for attempt in range(connection.retries + 1):
+                try:
+                    session = await self._get_session(connection, entry)
+                    return await asyncio.wait_for(
+                        operation(session), timeout=connection.timeout_seconds
+                    )
+                except Exception as exc:
+                    error = exc
+                    self._discovered_tools = None
+                    await self._close_session(entry)
+                    if attempt < connection.retries:
+                        await asyncio.sleep(0.2 * (attempt + 1))
         raise McpClientError(f"MCP server unavailable at {connection.url}") from error
 
-    async def _run_sse(
+    async def _get_session(
         self,
         connection: McpServerConnection,
-        operation: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        async with sse_client(
-            connection.url,
-            timeout=connection.timeout_seconds,
-            sse_read_timeout=connection.timeout_seconds,
-        ) as streams:
-            return await _run_initialized_session(
-                streams[0],
-                streams[1],
-                operation,
-                connection.timeout_seconds,
-            )
-
-    async def _run_streamable_http(
-        self,
-        connection: McpServerConnection,
-        operation: Callable[[Any], Awaitable[Any]],
-    ) -> Any:
-        async with httpx.AsyncClient(timeout=connection.timeout_seconds) as http_client:
-            async with streamable_http_client(
-                connection.url,
-                http_client=http_client,
-            ) as streams:
-                return await _run_initialized_session(
-                    streams[0],
-                    streams[1],
-                    operation,
-                    connection.timeout_seconds,
+        entry: _McpSession,
+    ) -> ClientSession:
+        if entry.session is not None:
+            return entry.session
+        stack = AsyncExitStack()
+        try:
+            if connection.transport == "streamable_http":
+                http_client = await stack.enter_async_context(
+                    httpx.AsyncClient(timeout=connection.timeout_seconds)
                 )
+                streams = await stack.enter_async_context(
+                    streamable_http_client(connection.url, http_client=http_client)
+                )
+            else:
+                streams = await stack.enter_async_context(
+                    sse_client(
+                        connection.url,
+                        timeout=connection.timeout_seconds,
+                        sse_read_timeout=connection.timeout_seconds,
+                    )
+                )
+            session = await stack.enter_async_context(ClientSession(streams[0], streams[1]))
+            await asyncio.wait_for(session.initialize(), timeout=connection.timeout_seconds)
+        except Exception:
+            await stack.aclose()
+            raise
+        entry.stack = stack
+        entry.session = session
+        return session
 
-
-async def _run_initialized_session(
-    read_stream: Any,
-    write_stream: Any,
-    operation: Callable[[Any], Awaitable[Any]],
-    timeout_seconds: float,
-) -> Any:
-    async with ClientSession(read_stream, write_stream) as session:
-        await session.initialize()
-        return await asyncio.wait_for(operation(session), timeout=timeout_seconds)
+    async def _close_session(self, entry: _McpSession) -> None:
+        stack = entry.stack
+        entry.stack = None
+        entry.session = None
+        if stack is not None:
+            await stack.aclose()

@@ -6,7 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
-当前没有进行中的变更。
+- [reuse-mcp-sessions](/changes/active/reuse-mcp-sessions/)
 
 ## 已归档
 

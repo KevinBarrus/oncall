@@ -312,6 +312,7 @@ def create_app(
             yield
         finally:
             await runtime.stop()
+            await cast(McpConnectionService, application.state.mcp_connection_service).aclose()
             owned_engine = cast(AsyncEngine | None, application.state.memory_engine)
             if owned_engine is not None:
                 await owned_engine.dispose()
@@ -343,6 +344,13 @@ def create_app(
     app.state.chat_agent_runner = chat_agent_runner
     app.state.aiops_diagnostic_runner = aiops_diagnostic_runner
     app.state.alert_provider = alert_provider
+    mcp_config = project_config_section("mcp", config_path=resolved_project_config_path)
+    app.state.mcp_connection_service = McpConnectionService(
+        repositories,
+        default_url=required_str(mcp_config, "clsSseUrl"),
+        default_timeout_seconds=required_int(mcp_config, "timeoutSeconds"),
+        default_retries=required_int(mcp_config, "retries"),
+    )
     if repositories.background_jobs is None:
         raise RuntimeError("Background job repository is required.")
     background_runtime = BackgroundJobRuntime(repositories.background_jobs)
@@ -1769,13 +1777,7 @@ def _feedback_service(request: Request) -> UserFeedbackService:
 
 
 def _mcp_connection_service(request: Request) -> McpConnectionService:
-    config = project_config_section("mcp", config_path=request.app.state.project_config_path)
-    return McpConnectionService(
-        _memory_repositories(request),
-        default_url=required_str(config, "clsSseUrl"),
-        default_timeout_seconds=required_int(config, "timeoutSeconds"),
-        default_retries=required_int(config, "retries"),
-    )
+    return cast(McpConnectionService, request.app.state.mcp_connection_service)
 
 
 async def _schedule_index_task(request: Request, *, owner_user_id: str, task_id: str) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -39,6 +40,12 @@ class _ValidatedConnection:
     retries: int
 
 
+@dataclass(slots=True)
+class _CachedClient:
+    connections: tuple[McpServerConnection, ...]
+    client: LocalMcpClient
+
+
 class McpConnectionService:
     def __init__(
         self,
@@ -52,6 +59,8 @@ class McpConnectionService:
         self._default_url = default_url
         self._default_timeout_seconds = default_timeout_seconds
         self._default_retries = default_retries
+        self._clients: dict[str, _CachedClient] = {}
+        self._client_lock = asyncio.Lock()
 
     async def list(self, *, owner_user_id: str) -> list[McpConnectionRecord]:
         repository = self._repository()
@@ -143,6 +152,8 @@ class McpConnectionService:
             tools = await client.discover_tools()
         except McpClientError:
             error = "MCP Server 不可用或工具发现失败。"
+        finally:
+            await client.aclose()
         updated = await repository.save_check(
             owner_user_id=owner_user_id,
             connection_id=connection_id,
@@ -156,13 +167,36 @@ class McpConnectionService:
 
     async def client_for_user(self, *, owner_user_id: str) -> LocalMcpClient:
         records = await self._repository().list(owner_user_id=owner_user_id)
+        connections = self._connections_for_records(records)
+        async with self._client_lock:
+            cached = self._clients.get(owner_user_id)
+            if cached is not None and cached.connections == connections:
+                return cached.client
+            if cached is not None:
+                await cached.client.aclose()
+            client = LocalMcpClient(connections=connections)
+            self._clients[owner_user_id] = _CachedClient(connections, client)
+            return client
+
+    async def aclose(self) -> None:
+        async with self._client_lock:
+            clients = tuple(self._clients.values())
+            self._clients.clear()
+        await asyncio.gather(*(cached.client.aclose() for cached in clients))
+
+    def _connections_for_records(
+        self, records: list[McpConnectionRecord]
+    ) -> tuple[McpServerConnection, ...]:
         if not records:
-            return LocalMcpClient(
-                self._default_url,
-                timeout_seconds=self._default_timeout_seconds,
-                retries=self._default_retries,
+            return (
+                McpServerConnection(
+                    name="cls",
+                    url=self._default_url,
+                    timeout_seconds=self._default_timeout_seconds,
+                    retries=self._default_retries,
+                ),
             )
-        return _client_from_records([record for record in records if record.enabled])
+        return tuple(_connections_from_records([record for record in records if record.enabled]))
 
     def _repository(self) -> McpConnectionRepository:
         repository = self._repositories.mcp_connections
@@ -204,18 +238,20 @@ def _validated_connection(
 
 
 def _client_from_records(records: list[McpConnectionRecord]) -> LocalMcpClient:
-    return LocalMcpClient(
-        connections=[
-            McpServerConnection(
-                name=record.id,
-                url=record.url,
-                transport=record.transport,
-                timeout_seconds=record.timeout_seconds,
-                retries=record.retries,
-            )
-            for record in records
-        ]
-    )
+    return LocalMcpClient(connections=_connections_from_records(records))
+
+
+def _connections_from_records(records: list[McpConnectionRecord]) -> list[McpServerConnection]:
+    return [
+        McpServerConnection(
+            name=record.id,
+            url=record.url,
+            transport=record.transport,
+            timeout_seconds=record.timeout_seconds,
+            retries=record.retries,
+        )
+        for record in records
+    ]
 
 
 def _tool_payload(tool: McpToolDefinition) -> dict[str, object]:

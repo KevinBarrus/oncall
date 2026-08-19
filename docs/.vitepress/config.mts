@@ -2,7 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
-
+  { text: "reuse-mcp-sessions", link: "/changes/active/reuse-mcp-sessions/" },
 ];
 
 const archivedItems = [

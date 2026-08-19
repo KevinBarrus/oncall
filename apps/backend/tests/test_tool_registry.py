@@ -38,9 +38,12 @@ async def test_registry_routes_same_mcp_tool_name_to_provider() -> None:
     ]
     assert await registry.execute("mcp__server_a__search_log", {}) == "server_a"
     assert await registry.execute("mcp__server_b__search_log", {}) == "server_b"
+    tools = registry.langchain_tools()
+    assert await tools[0].ainvoke({}) == "server_a"
     assert client.calls == [
         ("server_a", "search_log", {}),
         ("server_b", "search_log", {}),
+        ("server_a", "search_log", {}),
     ]
 
 
