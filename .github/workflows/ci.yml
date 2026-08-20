@@ -27,6 +27,7 @@ jobs:
       - name: Prepare test config
         working-directory: .
         run: |
+          mkdir -p apps/backend/var
           cp config/project.template.json config/project.json
           cp config/user.project.template.json config/user.project.json
           python - <<'PY'
