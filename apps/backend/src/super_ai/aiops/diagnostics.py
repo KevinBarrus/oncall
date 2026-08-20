@@ -682,7 +682,7 @@ class AiopsDiagnosticService:
         decision_messages: dict[str, str] = {
             "bounded_delivery": "continuing with the next bounded step",
             "autonomous_replan": (
-                "2+ consecutive failures — triggering autonomous replan with KB fallback"
+                "2+ consecutive failures — rule-triggered KB fallback (no LLM replan)"
             ),
             "outcome_floor_recovery": (
                 "execution failed with no evidence — falling back to KB-only recovery"
@@ -735,17 +735,17 @@ class AiopsDiagnosticService:
         consecutive_failures: int,
         has_evidence: bool,
     ) -> str:
-        """Determine the interaction contract for the next diagnostic step.
+        """按规则确定下一步的交互契约（确定性规则，不调用 LLM）。
 
-        Four contracts adapted from LoopX state-interaction-model:
+        当前 Replanner 是规则驱动的受限重规划/回退，保证 AIOps 可预测性；
+        不会用 LLM 重新审视计划与证据。四种契约：
 
-        * ``bounded_delivery`` — plan not exhausted, last step succeeded: continue normally.
-        * ``autonomous_replan`` — ≥2 consecutive failures: abandon current plan step,
-          trigger KB-based alternative search in the executor.
-        * ``outcome_floor_recovery`` — a failure occurred but zero evidence has been
-          collected: fall back to a minimum-viability KB retrieval so the report
-          has at least document-based findings.
-        * ``report`` — plan exhausted: proceed to report generation.
+        * ``bounded_delivery`` — 计划未耗尽且上一步成功：继续下一步。
+        * ``autonomous_replan`` — 连续 ≥2 次失败：规则触发的回退，丢弃当前
+          计划步骤并在 Executor 中改用知识库检索替代（非 LLM 自主重规划）。
+        * ``outcome_floor_recovery`` — 工具失败且零证据：回退到最小可用
+          知识库检索，保证报告有文档级依据。
+        * ``report`` — 计划耗尽：进入报告生成。
         """
         plan_exhausted = plan_index >= plan_length
         if not plan_exhausted and consecutive_failures == 0:

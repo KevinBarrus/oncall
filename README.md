@@ -36,7 +36,7 @@ Agent Py 是一个本地优先的 AIOps 工作台。Vue 3 提供操作界面，F
 
 ### AIOps 智能诊断
 
-- **Plan-Execute-Replan**：使用 LangGraph 实现 `Planner -> Executor -> Replanner -> Report`，Planner 先检索 SOP，Executor 调用真实工具，Replanner 决定继续、调整或生成报告。
+- **Plan-Execute-Replan**：使用 LangGraph 实现 `Planner -> Executor -> Replanner -> Report`，Planner 先检索 SOP，Executor 调用真实工具，Replanner 按确定性规则决定继续、回退到知识库检索或生成报告（规则驱动的受限重规划，不调用 LLM 重新规划计划）。
 - **真实告警入口**：聚合 Prometheus v1 和 Alertmanager v2 活跃告警，用户可刷新告警并从某条告警直接创建诊断任务。
 - **持久后台执行**：诊断由 SQLite durable job runtime 调度，不阻塞 API；页面展示排队、执行、取消、失败和完成状态，并支持用户取消任务。
 - **诊断 SSE**：实时输出计划、步骤、工具调用、证据、重规划、报告、完成和错误事件；断开后可根据持久化事件和任务数据恢复。
