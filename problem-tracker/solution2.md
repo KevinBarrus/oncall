@@ -221,6 +221,9 @@
 
 - 将当前模型明确为“单用户即单租户”，继续以 owner scope 保障隔离。
 - 只有产品需要团队、组织和成员授权时，才设计独立 tenant、成员关系和迁移方案。
+- 已完成：OpenSpec `authorization-and-tenant-isolation` 已明确“user ID 用作 tenant 范围，直到引入单独的组织 tenant 模型”。
+- 已完成：代码注释（`SopBeliefService`）与 README 明确“单用户即单租户”模型，tenant 范围等于 owner 用户，owner scope 即隔离边界。
+- 限制：不引入独立 tenant/成员模型；多租户字段（tenantId）作为预留，产品需要组织级隔离时再设计迁移。
 
 ## 问题28的解决方案：稳定依赖解析结果
 

@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "clarify-single-user-tenant", link: "/changes/active/clarify-single-user-tenant/" },
   { text: "replace-fragile-json-extraction", link: "/changes/active/replace-fragile-json-extraction/" },
   { text: "align-replanner-capability", link: "/changes/active/align-replanner-capability/" },
   { text: "split-api-routers", link: "/changes/active/split-api-routers/" },

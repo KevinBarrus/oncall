@@ -205,7 +205,11 @@ def decide_rewrite(belief: SopBeliefState) -> RewriteDecision:
 
 
 class SopBeliefService:
-    """Apply Bayesian SOP rules through tenant-scoped persistence."""
+    """Apply Bayesian SOP rules through tenant-scoped persistence.
+
+    当前租户模型为“单用户即单租户”：调用方以 ``tenant_id=owner_user_id``
+    传参，owner scope 即隔离边界；引入组织级多租户前保持此模型。
+    """
 
     def __init__(self, repository: SopBeliefRepository) -> None:
         self._repository = repository

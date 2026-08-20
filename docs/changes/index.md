@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [clarify-single-user-tenant](/changes/active/clarify-single-user-tenant/)
 - [replace-fragile-json-extraction](/changes/active/replace-fragile-json-extraction/)
 - [align-replanner-capability](/changes/active/align-replanner-capability/)
 - [split-api-routers](/changes/active/split-api-routers/)
