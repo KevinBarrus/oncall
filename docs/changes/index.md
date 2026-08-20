@@ -14,6 +14,7 @@ title: OpenSpec 变更
 - [limit-manual-memory-compaction](/changes/active/limit-manual-memory-compaction/)
 - [observe-chat-tool-degradation](/changes/active/observe-chat-tool-degradation/)
 - [reuse-mcp-sessions](/changes/active/reuse-mcp-sessions/)
+- [validate-memory-summary-fidelity](/changes/active/validate-memory-summary-fidelity/)
 
 ## 已归档
 

@@ -17,8 +17,10 @@ from super_ai.chat.memory import (
     ChatMemoryService,
     ChatRuntimeContextBudget,
     ChatRuntimeContextLimitReached,
+    MemoryFidelityError,
     _memory_instruction,  # pyright: ignore[reportPrivateUsage]
     _select_messages_for_compaction,  # pyright: ignore[reportPrivateUsage]
+    _validate_memory_fidelity,  # pyright: ignore[reportPrivateUsage]
     _validated_memory_document,  # pyright: ignore[reportPrivateUsage]
     count_tokens,
     maybe_compress_structured_tool_output,
@@ -89,6 +91,32 @@ class FailingProvider:
         return self.Model()
 
 
+class FabricatedMemoryProvider:
+    """返回含原文无法支撑数字的摘要，模拟模型编造。"""
+
+    class Model:
+        async def ainvoke(self, input: object) -> object:
+            return FakeMessage(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "summary": "服务超时 503，重试 2 次。",
+                        "items": [
+                            {
+                                "category": "fact",
+                                "content": "请求返回 503",
+                                "sourceMessageIds": ["message-1"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    def create_chat_model(self) -> Model:
+        return self.Model()
+
+
 def test_memory_compaction_selects_bounded_old_prefix() -> None:
     messages = [
         ChatMessageRecord(
@@ -134,6 +162,58 @@ def test_structured_memory_requires_known_source_ids() -> None:
     assert _validated_memory_document(payload, allowed_source_ids={"message-1"}) is not None
     assert _validated_memory_document(payload, allowed_source_ids={"message-2"}) is None
     assert "message-1" in _memory_instruction(payload)
+
+
+def test_memory_fidelity_rejects_untraceable_numbers() -> None:
+    memory: dict[str, object] = {
+        "version": 1,
+        "summary": "服务超时 503，重试 3 次。",
+        "items": [],
+    }
+    source_text = "[message_id=message-1] user: 服务返回 502，重试 2 次。"
+    assert _validate_memory_fidelity(memory, source_text=source_text) is False
+
+
+def test_memory_fidelity_accepts_traceable_numbers() -> None:
+    memory: dict[str, object] = {
+        "version": 1,
+        "summary": "服务超时 503，重试 2 次。",
+        "items": [],
+    }
+    source_text = "[message_id=message-1] user: 服务返回 503，重试 2 次。"
+    assert _validate_memory_fidelity(memory, source_text=source_text) is True
+
+
+def test_memory_fidelity_rejects_unfounded_decision() -> None:
+    memory: dict[str, object] = {
+        "version": 1,
+        "summary": "继续排查。",
+        "items": [
+            {
+                "category": "decision",
+                "content": "加大内存",
+                "sourceMessageIds": ["message-1"],
+            }
+        ],
+    }
+    source_text = "[message_id=message-1] user: 先看日志定位超时。"
+    assert _validate_memory_fidelity(memory, source_text=source_text) is False
+
+
+def test_memory_fidelity_accepts_decision_with_literal_evidence() -> None:
+    memory: dict[str, object] = {
+        "version": 1,
+        "summary": "继续排查。",
+        "items": [
+            {
+                "category": "decision",
+                "content": "重启服务",
+                "sourceMessageIds": ["message-1"],
+            }
+        ],
+    }
+    source_text = "[message_id=message-1] user: 先重启服务再观察。"
+    assert _validate_memory_fidelity(memory, source_text=source_text) is True
 
 
 def test_runtime_context_budget_reserves_output_and_rejects_overflow() -> None:
@@ -427,6 +507,50 @@ async def test_failed_background_compaction_preserves_existing_memory(
         )
 
         with pytest.raises(RuntimeError, match="summary unavailable"):
+            await service.compact_once(
+                owner_user_id="user-a",
+                session=session,
+                history=history,
+                system_prompt="你是助手。",
+            )
+        persisted = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert persisted is not None
+    assert persisted.memory_summary is None
+    assert persisted.compacted_message_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fabricated_memory_rejected_without_overwriting_existing(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-fabricated"
+        )
+        await repositories.chat.append_message(
+            owner_user_id="user-a",
+            message_id="message-1",
+            session_id=session.id,
+            role="user",
+            content="需要压缩的历史消息",
+        )
+        history = await repositories.chat.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        service = ChatMemoryService(
+            repositories=repositories,
+            llm_provider=cast(LlmProvider, FabricatedMemoryProvider()),
+            context_window_tokens=1_000,
+        )
+
+        with pytest.raises(MemoryFidelityError):
             await service.compact_once(
                 owner_user_id="user-a",
                 session=session,

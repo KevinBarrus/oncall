@@ -41,6 +41,7 @@ RUNTIME_SAFETY_MARGIN_PERCENT = 90.0
 MEMORY_SCHEMA_VERSION = 1
 MEMORY_CATEGORIES = frozenset({"goal", "fact", "decision", "todo", "source", "recent_context"})
 MEMORY_COMPACTION_TIMEOUT_SECONDS = 10
+_MEMORY_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 MemoryCompactionScheduler = Callable[[str, str], Awaitable[None]]
 
 
@@ -50,6 +51,10 @@ class ChatContextLimitReached(RuntimeError):
 
 class ChatRuntimeContextLimitReached(RuntimeError):
     """Raised when an Agent run exhausts its input/tool/output budget."""
+
+
+class MemoryFidelityError(RuntimeError):
+    """Raised when a compacted memory cannot be traced to the source transcript."""
 
 
 @dataclass(slots=True)
@@ -314,6 +319,11 @@ class ChatMemoryService:
         )
         if memory is None:
             raise RuntimeError("The model returned an invalid structured memory.")
+        source_text = _compaction_source_text(transcript, existing_memory)
+        if not _validate_memory_fidelity(memory, source_text=source_text):
+            raise MemoryFidelityError(
+                "The model returned memory claims that cannot be traced to the source."
+            )
         summary = json.dumps(memory, ensure_ascii=False, separators=(",", ":"))
         tokens = estimate_context_tokens(
             system_prompt=system_prompt,
@@ -637,6 +647,67 @@ def _validated_memory_document(text: str, *, allowed_source_ids: set[str]) -> Js
             }
         )
     return {"version": MEMORY_SCHEMA_VERSION, "summary": summary.strip(), "items": normalized_items}
+
+
+def _validate_memory_fidelity(memory: JsonDict, *, source_text: str) -> bool:
+    """校验压缩记忆的数字与行动条目可追溯到原文。
+
+    返回 False 表示摘要包含原文无法支撑的声称；调用方应保留上一版记忆。
+    """
+    source_numbers = _extract_numbers(source_text)
+    summary = str(memory.get("summary") or "")
+    items = memory.get("items")
+    item_list = cast(list[object], items) if isinstance(items, list) else []
+    for number in _extract_numbers(summary):
+        if number not in source_numbers:
+            return False
+    for raw_item in item_list:
+        if not isinstance(raw_item, Mapping):
+            return False
+        item = cast(Mapping[str, object], raw_item)
+        content = str(item.get("content") or "")
+        category = str(item.get("category") or "")
+        for number in _extract_numbers(content):
+            if number not in source_numbers:
+                return False
+        if category in {"decision", "todo"} and not _shares_literal_evidence(
+            content, source_text
+        ):
+            return False
+    return True
+
+
+def _extract_numbers(text: str) -> set[str]:
+    """提取文本中的数字 token，数字形式错误码也由该集合覆盖。"""
+    return set(_MEMORY_NUMBER_PATTERN.findall(text))
+
+
+def _shares_literal_evidence(content: str, source_text: str) -> bool:
+    """判断行动条目是否与原文共享至少一个长度≥2的非数字连续片段。"""
+    content_compact = "".join(_MEMORY_NUMBER_PATTERN.sub("", content).split())
+    source_compact = "".join(_MEMORY_NUMBER_PATTERN.sub("", source_text).split())
+    if len(content_compact) < 2:
+        return False
+    return any(
+        content_compact[index : index + 2] in source_compact
+        for index in range(len(content_compact) - 1)
+    )
+
+
+def _compaction_source_text(transcript: str, existing_memory: JsonDict) -> str:
+    """拼出压缩输入的原文文本，供摘要忠实性校验比对。"""
+    parts = [transcript]
+    summary = existing_memory.get("summary")
+    if isinstance(summary, str):
+        parts.append(summary)
+    items = existing_memory.get("items")
+    if isinstance(items, list):
+        for raw_item in cast(list[object], items):
+            if isinstance(raw_item, Mapping):
+                content = cast(Mapping[str, object], raw_item).get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+    return "\n".join(parts)
 
 
 def _select_messages_for_compaction(

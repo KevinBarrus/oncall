@@ -10,6 +10,7 @@ const activeItems = [
   { text: "limit-manual-memory-compaction", link: "/changes/active/limit-manual-memory-compaction/" },
   { text: "observe-chat-tool-degradation", link: "/changes/active/observe-chat-tool-degradation/" },
   { text: "reuse-mcp-sessions", link: "/changes/active/reuse-mcp-sessions/" },
+  { text: "validate-memory-summary-fidelity", link: "/changes/active/validate-memory-summary-fidelity/" },
 ];
 
 const archivedItems = [
