@@ -37,3 +37,54 @@ jobs:
           name: ragas-evaluation-report
           path: apps/backend/tests/data/eval_results/eval_latest.json
           if-no-files-found: ignore
+
+  aiops-evaluate:
+    name: AIOps diagnosis quality evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        working-directory: apps/backend
+        run: uv sync
+      - name: Prepare config and infrastructure
+        working-directory: .
+        run: |
+          mkdir -p apps/backend/var
+          cp config/project.template.json config/project.json
+          cp config/user.project.template.json config/user.project.json
+          python - <<'PY'
+          import json
+          path = "config/user.project.json"
+          data = json.load(open(path))
+          data["llm"]["apiKey"] = "${{ secrets.QWEN_API_KEY }}"
+          json.dump(data, open(path, "w"))
+          PY
+          docker compose -f infra/compose.yaml up -d --wait milvus
+      - name: Start backend
+        working-directory: apps/backend
+        run: |
+          uv run uvicorn super_ai.api.app:create_app --factory --host 127.0.0.1 --port 8000 > var/aiops-eval-backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/ready > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          echo "Backend did not become ready"
+          exit 1
+      - name: Run AIOps evaluation
+        working-directory: apps/backend
+        run: uv run python tests/aiops_evaluation.py --limit 3
+      - name: Upload AIOps evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiops-evaluation-report
+          path: apps/backend/tests/data/aiops_eval_results/eval_latest.json
+          if-no-files-found: ignore

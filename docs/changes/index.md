@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [add-aiops-diagnosis-evaluation](/changes/active/add-aiops-diagnosis-evaluation/)
 - [add-ci-regression-gates](/changes/active/add-ci-regression-gates/)
 - [archive-compacted-chat-history](/changes/active/archive-compacted-chat-history/)
 - [cache-bm25-keyword-corpus](/changes/active/cache-bm25-keyword-corpus/)
