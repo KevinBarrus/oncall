@@ -67,6 +67,9 @@
 
 - 若继续使用自定义 Judge 指标，将脚本改名为项目评测并移除未使用的 `ragas` 依赖。
 - 若要采用 RAGAS，则真实接入其指标和报告格式；二者只保留一种实现。
+- 已完成：保留自定义 Judge 指标实现，将 `tests/ragas_evaluation.py` 改名为 `tests/rag_evaluation.py`，配套 `setup_rag_kb.py`、`rag_test_qa.json` 同步改名，类名改为 `TestRagEvaluation`。
+- 已完成：移除 `pyproject.toml` 中的 `ragas>=0.4.3` 运行时依赖并更新 uv.lock，评测账号与环境变量统一改为 `rag-eval` / `RAG_API_BASE_URL`。
+- 已完成：更新评测 workflow 与 ruff/pyright exclude 中的文件引用。
 
 ## 问题9的解决方案：维护可审计人工相关性标注
 

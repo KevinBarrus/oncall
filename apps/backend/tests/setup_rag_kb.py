@@ -1,7 +1,7 @@
-"""Seed the knowledge base with test documents for RAGAS evaluation.
+"""Seed the knowledge base with test documents for RAG evaluation.
 
 Usage:
-    uv run python tests/setup_ragas_kb.py
+    uv run python tests/setup_rag_kb.py
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ DOCUMENTS = [
     TEST_DATA / "k8s-pod-troubleshooting.md",
     TEST_DATA / "observability-metrics.md",
 ]
-PASSWORD = "ragas-test-123456"
-EMAIL = "ragas-eval@agent-py.local"
+PASSWORD = "rag-test-123456"
+EMAIL = "rag-eval@agent-py.local"
 
 
 async def _register(client: httpx.AsyncClient, email: str, display_name: str) -> str:
@@ -108,7 +108,7 @@ async def _upload_document(
 
 async def main() -> None:
     print("=" * 60)
-    print("  RAGAS 评估 — 知识库数据准备")
+    print("  RAG 评估 — 知识库数据准备")
     print("=" * 60)
     print()
 
@@ -127,7 +127,7 @@ async def main() -> None:
         print()
         print(f"[1/3] Authenticating ({EMAIL}) ...")
         try:
-            token = await _register(client, EMAIL, "RAGAS Eval User")
+            token = await _register(client, EMAIL, "RAG Eval User")
             print(f"  Token: {token[:20]}...")
         except Exception as exc:
             print(f"[FAIL] Authentication error: {exc}")
@@ -173,7 +173,7 @@ async def main() -> None:
     print()
     print("=" * 60)
     print("  Setup complete. Run the evaluation:")
-    print("    uv run python tests/ragas_evaluation.py")
+    print("    uv run python tests/rag_evaluation.py")
     print("=" * 60)
 
 

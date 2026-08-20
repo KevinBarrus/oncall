@@ -26,7 +26,6 @@ dependencies = [
     "python-docx>=1.1.2",
     "python-multipart>=0.0.20",
     "pyyaml>=6.0.3",
-    "ragas>=0.4.3",
     "rank-bm25>=0.2.2",
     "sqlalchemy>=2.0.51",
     "tencentcloud-cls-sdk-python==1.0.4",
@@ -69,8 +68,8 @@ src = ["src", "tests"]
 exclude = [
     "alembic/versions/",
     "tests/cag_runner.py",
-    "tests/ragas_evaluation.py",
-    "tests/setup_ragas_kb.py",
+    "tests/rag_evaluation.py",
+    "tests/setup_rag_kb.py",
 ]
 
 [tool.ruff.lint]
@@ -80,8 +79,8 @@ select = ["B", "E", "F", "I", "UP"]
 include = ["src", "tests"]
 exclude = [
     "tests/cag_runner.py",
-    "tests/ragas_evaluation.py",
-    "tests/setup_ragas_kb.py",
+    "tests/rag_evaluation.py",
+    "tests/setup_rag_kb.py",
 ]
 pythonVersion = "3.10"
 typeCheckingMode = "strict"

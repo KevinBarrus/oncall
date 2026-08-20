@@ -17,11 +17,11 @@ Baselines:
   - answer-injection sanity check: inject the standard answer as context.
 
 Usage:
-    uv run python tests/ragas_evaluation.py
-    uv run python tests/ragas_evaluation.py --limit 5
-    uv run python tests/ragas_evaluation.py --strategy hybrid+rerank
-    uv run python tests/ragas_evaluation.py --e2e --limit 5
-    uv run python tests/ragas_evaluation.py --report     # print cached report
+    uv run python tests/rag_evaluation.py
+    uv run python tests/rag_evaluation.py --limit 5
+    uv run python tests/rag_evaluation.py --strategy hybrid+rerank
+    uv run python tests/rag_evaluation.py --e2e --limit 5
+    uv run python tests/rag_evaluation.py --report     # print cached report
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ from super_ai.vector_store import (
 
 _TEST_DIR = Path(__file__).resolve().parent
 _DATA_DIR = _TEST_DIR / "data"
-_QA_FILE = _DATA_DIR / "ragas_test_qa.json"
+_QA_FILE = _DATA_DIR / "rag_test_qa.json"
 _RESULTS_DIR = _DATA_DIR / "eval_results"
 _ENV_FILE = _TEST_DIR / ".env.test"
 
@@ -87,7 +87,7 @@ ALL_STRATEGIES: tuple[StrategyId, ...] = (
 
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-E2E_API_BASE_URL = os.environ.get("RAGAS_API_BASE_URL", "http://127.0.0.1:8000")
+E2E_API_BASE_URL = os.environ.get("RAG_API_BASE_URL", "http://127.0.0.1:8000")
 TOP_K = 5
 MAX_CONTEXT_CHARS_PER_QUESTION = 6000
 GOLD_RELEVANCE_TOKEN_OVERLAP_THRESHOLD = 0.15  # jieba 分词后阈值（中文+英文混合）
@@ -124,7 +124,7 @@ def _load_qa_pairs(limit: int | None = None) -> list[dict[str, Any]]:
     with open(_QA_FILE, encoding="utf-8") as fh:
         data: object = json.load(fh)
     if not isinstance(data, list):
-        raise ValueError("ragas_test_qa.json must contain a JSON array.")
+        raise ValueError("rag_test_qa.json must contain a JSON array.")
     items = cast(list[dict[str, Any]], data)
     for idx, item in enumerate(items):
         for field in ("question", "ground_truth"):
@@ -704,15 +704,15 @@ async def _discover_eval_credentials(
 ) -> tuple[str, str] | None:
     response = await client.post(
         "/auth/login",
-        json={"email": "ragas-eval@agent-py.local", "password": "ragas-test-123456"},
+        json={"email": "rag-eval@agent-py.local", "password": "rag-test-123456"},
     )
     if response.status_code != 200:
         response = await client.post(
             "/auth/register",
             json={
-                "email": "ragas-eval@agent-py.local",
-                "displayName": "RAGAS Eval",
-                "password": "ragas-test-123456",
+                "email": "rag-eval@agent-py.local",
+                "displayName": "RAG Eval",
+                "password": "rag-test-123456",
             },
         )
     if response.status_code not in {200, 201}:
@@ -862,7 +862,7 @@ async def run_evaluation(
     # Knowledge base
     kb_id = await _discover_knowledge_base_id()
     kb_ids = [kb_id] if kb_id else []
-    owner_id = kb_id[3:] if kb_id and kb_id.startswith("kb_") else "ragas-eval"
+    owner_id = kb_id[3:] if kb_id and kb_id.startswith("kb_") else "rag-eval"
     print(f"      KB: {kb_id or 'N/A'}")
 
     # Embedding model & chunks corpus
@@ -1187,15 +1187,15 @@ async def _discover_knowledge_base_id() -> str | None:
         async with httpx.AsyncClient(base_url="http://127.0.0.1:8000", timeout=10) as client:
             resp = await client.post(
                 "/auth/login",
-                json={"email": "ragas-eval@agent-py.local", "password": "ragas-test-123456"},
+                json={"email": "rag-eval@agent-py.local", "password": "rag-test-123456"},
             )
             if resp.status_code != 200:
                 resp = await client.post(
                     "/auth/register",
                     json={
-                        "email": "ragas-eval@agent-py.local",
-                        "displayName": "RAGAS Eval",
-                        "password": "ragas-test-123456",
+                        "email": "rag-eval@agent-py.local",
+                        "displayName": "RAG Eval",
+                        "password": "rag-test-123456",
                     },
                 )
                 resp.raise_for_status()
@@ -1385,7 +1385,7 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestRagasEvaluation:
+class TestRagEvaluation:
     def test_qa_dataset_loads(self) -> None:
         pairs = _load_qa_pairs()
         assert len(pairs) >= 20, f"Expected >=20 QA pairs, got {len(pairs)}"
