@@ -168,6 +168,10 @@
 
 - 将 torch、transformers、bitsandbytes、accelerate 和评测依赖移出运行时 dependencies，放入可选 eval group。
 - CI 仅在 CAG 实验 job 安装该组依赖；正常服务安装不再下载重 ML 栈。
+- 已完成：`ragas` 依赖在问题8 中移除；torch、transformers、bitsandbytes、accelerate 在问题11 中移入可选 `eval` dependency group。
+- 已完成：CI 主门禁保持默认 `uv sync`（不安装重 ML 依赖），评测 workflow 的 RAG job 使用 `uv sync --group eval`。
+- 已完成：核对运行时依赖，`src` 不再依赖任何重 ML 包；jieba 为轻量纯 Python 评测依赖且 CI 评测辅助测试需要，保留在运行时。
+- 限制：本地运行 CAG 评测前需手动 `uv sync --group eval`。
 
 ## 问题22的解决方案：新增最小 CI 门禁
 
