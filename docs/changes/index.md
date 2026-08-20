@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [extend-ci-evaluation-gates](/changes/active/extend-ci-evaluation-gates/)
 - [move-eval-deps-out-of-runtime](/changes/active/move-eval-deps-out-of-runtime/)
 - [isolate-cag-eval-baseline](/changes/active/isolate-cag-eval-baseline/)
 - [improve-judge-statistics](/changes/active/improve-judge-statistics/)

@@ -44,7 +44,7 @@ jobs:
       - name: Pytest (offline regression)
         run: uv run pytest -m "not local_config"
       - name: Evaluation helper tests
-        run: uv run pytest tests/aiops_evaluation.py -q
+        run: uv run pytest tests/aiops_evaluation.py tests/rag_evaluation.py -q
 
   frontend:
     name: Frontend (typecheck / test / build)

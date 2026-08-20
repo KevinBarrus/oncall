@@ -177,6 +177,9 @@
 
 - 建立 GitHub Actions，执行后端 Ruff、Pyright、pytest，以及前端和契约的现有检查。
 - 外部服务评测与 GPU/CAG 实验使用手动或定时 workflow，不阻塞普通提交。
+- 已完成：问题6 已建立 `.github/workflows/ci.yml`，push/PR 强制执行后端 ruff/pyright/离线 pytest 与前端、契约检查；`.github/workflows/evaluation.yml` 提供手动与定时评测。
+- 已完成：评测辅助函数测试补充纳入 CI（`aiops_evaluation.py` + `rag_evaluation.py`）。
+- 限制：GPU/CAG 实验依赖 eval group 与外部服务，仅评测 workflow 安装运行，不阻塞普通提交。
 
 ## 问题23的解决方案：对齐 Replanner 表述与能力
 
