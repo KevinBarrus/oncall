@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [improve-judge-statistics](/changes/active/improve-judge-statistics/)
 - [maintain-rag-relevance-labels](/changes/active/maintain-rag-relevance-labels/)
 - [rename-rag-evaluation](/changes/active/rename-rag-evaluation/)
 - [add-aiops-diagnosis-evaluation](/changes/active/add-aiops-diagnosis-evaluation/)

@@ -518,12 +518,61 @@ def _normalise_evidence(value: str) -> str:
 class JudgeScore:
     score: float | None
     error: str | None = None
+    samples: int = 0
+    failures: int = 0
+    std: float | None = None
+
+
+JUDGE_SAMPLES = 3
 
 
 def _parse_score(text: str) -> float | None:
-    """Accept only one complete score, never the first number in arbitrary text."""
+    """从 judge 输出解析分数：优先 JSON 的 score 字段，回退纯数字。
+
+    judge 带解释的输出（如 ``{"score": 0.85, "explanation": ...}``）也能被解析，
+    降低纯数字 fullmatch 造成的无效分比例。
+    """
+    json_score = _score_from_json(text)
+    if json_score is not None:
+        return json_score
     match = re.fullmatch(r"\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*", text)
     return round(float(match.group(1)), 4) if match else None
+
+
+def _score_from_json(text: str) -> float | None:
+    """从 judge 输出的 JSON 中提取 ``score`` 字段（0.0-1.0）。"""
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if match is None:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    raw = parsed.get("score")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return _bounded_score(float(raw))
+    if isinstance(raw, str):
+        try:
+            return _bounded_score(float(raw.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _bounded_score(value: float) -> float | None:
+    """归一化到 0.0-1.0，越界视为无效。"""
+    return round(value, 4) if 0.0 <= value <= 1.0 else None
+
+
+def _stddev(values: Sequence[float]) -> float:
+    """总体标准差。"""
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return variance ** 0.5
 
 
 def _score_display(value: object) -> str:
@@ -533,13 +582,39 @@ def _score_display(value: object) -> str:
 async def _llm_score(
     judge_model: Any,
     prompt: str,
+    samples: int = JUDGE_SAMPLES,
 ) -> JudgeScore:
-    try:
-        resp = await judge_model.ainvoke(prompt)
-        score = _parse_score(_extract_text(resp))
-        return JudgeScore(score=score, error=None if score is not None else "invalid_score")
-    except Exception as exc:
-        return JudgeScore(score=None, error=exc.__class__.__name__)
+    """重复采样 judge 打分，返回均值、标准差与有效/失败样本数。"""
+    values: list[float] = []
+    failures = 0
+    last_error: str | None = None
+    for _ in range(max(samples, 1)):
+        try:
+            resp = await judge_model.ainvoke(prompt)
+            score = _parse_score(_extract_text(resp))
+        except Exception as exc:
+            failures += 1
+            last_error = exc.__class__.__name__
+            continue
+        if score is None:
+            failures += 1
+        else:
+            values.append(score)
+    if not values:
+        return JudgeScore(
+            score=None,
+            error=last_error or "invalid_score",
+            samples=0,
+            failures=failures,
+        )
+    mean = sum(values) / len(values)
+    std = _stddev(values) if len(values) >= 2 else None
+    return JudgeScore(
+        score=round(mean, 4),
+        samples=len(values),
+        failures=failures,
+        std=round(std, 4) if std is not None else None,
+    )
 
 
 async def _score_one_question(
@@ -548,11 +623,22 @@ async def _score_one_question(
     answer: str,
     contexts: list[str],
     ground_truth: str,
-) -> tuple[dict[str, float | None], dict[str, str]]:
+) -> tuple[dict[str, float | None], dict[str, str], dict[str, dict[str, object]]]:
+    """对一个回答的四个 LLM 指标重复采样打分。
+
+    返回 (均值, 全失败错误, 每指标统计)。统计字段：``std`` 标准差、
+    ``samples`` 有效样本数、``failures`` 解析失败次数。
+    """
     scores: dict[str, float | None] = {}
     errors: dict[str, str] = {}
+    stats: dict[str, dict[str, object]] = {}
 
     def record(key: str, result: JudgeScore) -> float | None:
+        stats[key] = {
+            "std": result.std,
+            "samples": result.samples,
+            "failures": result.failures,
+        }
         if result.error is not None:
             errors[key] = result.error
         return result.score
@@ -566,7 +652,8 @@ async def _score_one_question(
                 judge_model,
                 f"这个文档片段与问题直接相关吗？\n"
                 f"问题：{question}\n片段：{ctx[:500]}\n"
-                f"只输出0.0到1.0的数字。1.0=高度相关，0.0=不相关。",
+                f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+                f"\"explanation\": \"一句简短理由\"}}。1.0=高度相关，0.0=不相关。",
             ),
         )
         if score is not None:
@@ -575,6 +662,12 @@ async def _score_one_question(
     # CP@3 — only top-3 chunks (less noise for small-KB scenarios)
     top3 = cp_vals[:3] if len(cp_vals) >= 3 else cp_vals
     scores["context_precision_at_3"] = round(sum(top3) / len(top3), 4) if top3 else None
+    if top3:
+        stats["context_precision_at_3"] = {
+            "std": round(_stddev(top3), 4) if len(top3) >= 2 else None,
+            "samples": len(top3),
+            "failures": 0,
+        }
 
     # Faithfulness — penalize false attribution to documents
     doc_text = chr(10).join(contexts)[:2000]
@@ -587,7 +680,8 @@ async def _score_one_question(
         f"- 0.0: 📄部分大量编造、或文档根本没有的内容却被声称来自文档\n\n"
         f"文档内容：\n{doc_text}\n\n"
         f"回答：{answer[:1500]}\n\n"
-        f"只输出0.0-1.0的数字。",
+        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+        f"\"explanation\": \"一句简短理由\"}}。",
     ))
 
     # Answer Relevancy
@@ -595,7 +689,8 @@ async def _score_one_question(
         judge_model,
         f"评估这个回答是否直接回答了用户问题。\n"
         f"问题：{question}\n回答：{answer[:1000]}\n"
-        f"只输出0.0-1.0的数字，1.0=直接完整回答，0.0=完全偏离。",
+        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+        f"\"explanation\": \"一句简短理由\"}}。1.0=直接完整回答，0.0=完全偏离。",
     ))
 
     # Context Recall
@@ -604,10 +699,11 @@ async def _score_one_question(
         f"评估文档片段覆盖了标准答案中多少个关键要点。\n"
         f"标准答案：{ground_truth[:1500]}\n"
         f"文档片段：{chr(10).join(contexts)[:2000]}\n"
-        f"只输出0.0-1.0的数字，1.0=覆盖全部要点，0.0=未覆盖任何要点。",
+        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+        f"\"explanation\": \"一句简短理由\"}}。1.0=覆盖全部要点，0.0=未覆盖任何要点。",
     ))
 
-    return scores, errors
+    return scores, errors, stats
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +783,7 @@ async def _evaluate_generation_baseline(
 
         contexts = context_for(qa)
         answer, gen_ms = await _generate_answer(model, question, contexts)
-        llm_scores, judge_errors = await _score_one_question(
+        llm_scores, judge_errors, judge_stats = await _score_one_question(
             judge_model, question, answer, contexts, ground_truth
         )
 
@@ -702,6 +798,7 @@ async def _evaluate_generation_baseline(
                 "contextCount": len(contexts),
                 "scores": llm_scores,
                 "judgeErrors": judge_errors,
+                "judgeStats": judge_stats,
                 "latencyGenMs": round(gen_ms, 1),
             }
         )
@@ -816,7 +913,7 @@ async def _end_to_end_chat_evaluation(
                 ]
                 if isinstance(reference.get("excerpt"), str)
             ]
-        llm_scores, judge_errors = await _score_one_question(
+        llm_scores, judge_errors, judge_stats = await _score_one_question(
             judge_model, question, answer, contexts, ground_truth
         )
         for key, value in llm_scores.items():
@@ -831,6 +928,7 @@ async def _end_to_end_chat_evaluation(
                 "contextCount": len(contexts),
                 "scores": llm_scores,
                 "judgeErrors": judge_errors,
+                "judgeStats": judge_stats,
                 "sseEventCount": len(events),
                 "toolCallCount": sum(event["event"] == "tool.call" for event in events),
                 "completed": any(event["event"] == "complete" for event in events),
@@ -1003,7 +1101,7 @@ async def run_evaluation(
             recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
 
             # LLM scores
-            llm_scores, judge_errors = await _score_one_question(
+            llm_scores, judge_errors, judge_stats = await _score_one_question(
                 deepseek_judge,
                 question,
                 answer,
@@ -1037,6 +1135,7 @@ async def run_evaluation(
                     "atomic_fact_recall_at_5": round(recall_val, 4),
                 },
                 "judgeErrors": judge_errors,
+                "judgeStats": judge_stats,
                 "latency": {
                     "retrievalMs": round(retrieval_ms, 1),
                     "generationMs": round(generation_ms, 1),
@@ -1074,9 +1173,20 @@ async def run_evaluation(
             ]
             agg[key] = round(sum(cast(float, v) for v in vals) / len(vals), 4) if vals else None
 
-        judge_failures = sum(bool(cast(dict[str, object], item.get("judgeErrors", {}))) for item in run.per_item)
+        judge_failures = sum(
+            int(cast(dict[str, object], stats).get("failures", 0))
+            for item in run.per_item
+            for stats in cast(dict[str, object], item.get("judgeStats", {})).values()
+        )
+        judge_samples = sum(
+            int(cast(dict[str, object], stats).get("samples", 0))
+            for item in run.per_item
+            for stats in cast(dict[str, object], item.get("judgeStats", {})).values()
+        )
+        judge_total = judge_failures + judge_samples
         agg["judge_failure_count"] = judge_failures
-        agg["judge_failure_rate"] = round(judge_failures / len(run.per_item), 4) if run.per_item else 0.0
+        agg["judge_sample_count"] = judge_total
+        agg["judge_failure_rate"] = round(judge_failures / judge_total, 4) if judge_total else 0.0
 
         agg["avg_retrieval_ms"] = round(
             sum(cast(float, cast(dict[str, object], i["latency"])["retrievalMs"]) for i in run.per_item)
@@ -1169,6 +1279,11 @@ async def run_evaluation(
             "strategies": list(strategies),
             "qaCount": len(qa_pairs),
             "judgeModel": DEEPSEEK_CHAT_MODEL,
+            "judge": {
+                "model": DEEPSEEK_CHAT_MODEL,
+                "baseUrl": DEEPSEEK_BASE_URL,
+                "note": "跨模型裁判：DeepSeek 评估 Qwen 生成内容，存在系统性偏差，分数仅供参考。",
+            },
             "rerankModel": "BAAI/bge-reranker-v2-m3",
             "e2e": e2e,
             "datasetDistribution": _dataset_distribution(qa_pairs),
@@ -1262,6 +1377,47 @@ async def _discover_knowledge_base_id() -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _print_judge_statistics(strategies_data: Mapping[str, object]) -> None:
+    """打印每个策略的 Judge 统计：有效样本、失败率与 LLM 指标均值±std。"""
+    print()
+    print(f"  ── Judge 统计（重复采样 ×{JUDGE_SAMPLES}，有效样本/失败率，指标均值±std） ──")
+    llm_keys = ("context_precision", "context_recall", "faithfulness", "answer_relevancy")
+    for sid in ALL_STRATEGIES:
+        sdata = strategies_data.get(sid)
+        if not isinstance(sdata, Mapping):
+            continue
+        metrics = cast(Mapping[str, object], sdata.get("metrics", {}))
+        failure_rate = metrics.get("judge_failure_rate")
+        samples = metrics.get("judge_sample_count")
+        summary = (
+            f"样本={samples}  失败率={float(failure_rate):.1%}"
+            if isinstance(failure_rate, (int, float))
+            else "样本=N/A"
+        )
+        print(f"  {sid:<14} Judge {summary}")
+        per_item = cast(list[object], sdata.get("perItem", []))
+        for key in llm_keys:
+            values: list[float] = []
+            stds: list[float] = []
+            for raw_item in per_item:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                scores = raw_item.get("scores")
+                stats = raw_item.get("judgeStats")
+                if not isinstance(scores, Mapping) or not isinstance(stats, Mapping):
+                    continue
+                score = scores.get(key)
+                if isinstance(score, (int, float)):
+                    values.append(float(score))
+                    per_stat = stats.get(key)
+                    if isinstance(per_stat, Mapping) and isinstance(per_stat.get("std"), (int, float)):
+                        stds.append(float(per_stat["std"]))
+            if values:
+                mean = sum(values) / len(values)
+                std = sum(stds) / len(stds) if stds else 0.0
+                print(f"    {key:<24} {mean:.4f} ± {std:.4f}")
+
+
 def _print_comparison_report(payload: dict[str, object]) -> None:
     strategies_data = cast(dict[str, object], payload.get("strategies", {}))
     gold_document = cast(dict[str, object], payload.get("goldDocumentBaseline", {}))
@@ -1275,6 +1431,9 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     print(f"  时间: {payload.get('evaluatedAt', 'N/A')}")
     print(f"  题目数: {config.get('qaCount', 'N/A')}  |  Top-K: {config.get('topK', 'N/A')}")
     print(f"  Judge: {config.get('judgeModel', 'N/A')}  |  Rerank: {config.get('rerankModel', 'N/A')}")
+    judge_note = cast(dict[str, object], config.get("judge", {})).get("note")
+    if judge_note:
+        print(f"  Judge 说明: {judge_note}")
     print()
 
     # Dynamically determine which strategies are present in the data
@@ -1360,6 +1519,7 @@ def _print_comparison_report(payload: dict[str, object]) -> None:
     )
     print("  LLM 指标 (CP/CR/F/AR) 用 DeepSeek 评分；MRR/NDCG 使用人工来源相关性，FactR@5 使用人工原子事实")
     print("  CP@3 = 仅取 top-3 chunk 的 Context Precision（减少 small-KB 场景下噪音 chunk 的惩罚）")
+    _print_judge_statistics(strategies_data)
     print()
 
     # Error distribution
@@ -1486,6 +1646,41 @@ class TestRagEvaluation:
         assert _parse_score("blah 0.42 blah") is None
         assert _parse_score("nothing") is None
 
+    def test_parse_score_accepts_json_with_explanation(self) -> None:
+        assert _parse_score('{"score": 0.85, "explanation": "高度相关"}') == 0.85
+        assert _parse_score('{"score": "0.7", "explanation": "部分覆盖"}') == 0.7
+        assert _parse_score('{"explanation": "no score field"}') is None
+        assert _parse_score('{"score": 1.5}') is None
+
+    @pytest.mark.asyncio
+    async def test_llm_score_averages_repeated_samples(self) -> None:
+        class StubJudge:
+            async def ainvoke(self, _prompt: str) -> object:
+                return "0.8"
+
+        result = await _llm_score(StubJudge(), "score this", samples=3)
+        assert result.score == 0.8
+        assert result.samples == 3
+        assert result.failures == 0
+        assert result.std == 0.0
+
+    @pytest.mark.asyncio
+    async def test_llm_score_records_partial_failures(self) -> None:
+        class FlakyJudge:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ainvoke(self, _prompt: str) -> object:
+                self.calls += 1
+                if self.calls == 1:
+                    raise TimeoutError("flaky")
+                return '{"score": 0.6}'
+
+        result = await _llm_score(FlakyJudge(), "score this", samples=3)
+        assert result.score == 0.6
+        assert result.samples == 2
+        assert result.failures == 1
+
     @pytest.mark.asyncio
     async def test_judge_failure_is_recorded_without_a_score(self) -> None:
         class FailingJudge:
@@ -1495,6 +1690,7 @@ class TestRagEvaluation:
         result = await _llm_score(FailingJudge(), "score this")
         assert result.score is None
         assert result.error == "TimeoutError"
+        assert result.failures == JUDGE_SAMPLES
 
     def test_parse_sse_keeps_agent_and_reference_events(self) -> None:
         events = _parse_sse(

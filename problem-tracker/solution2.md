@@ -84,6 +84,10 @@
 
 - 保留跨模型 Judge，但在报告中显式标注 Judge 模型和局限。
 - 采用 JSON 评分格式、记录解析失败，重复运行并报告有效样本数、失败率和方差或置信区间。
+- 已完成：judge prompt 改为 JSON 评分格式（score + explanation），`_parse_score` 优先解析 JSON、回退纯数字，带解释输出不再判无效。
+- 已完成：每次 judge 打分默认重复采样 3 次，`JudgeScore` 记录均值、标准差、有效样本数与失败次数。
+- 已完成：`judge_failure_rate` 改为按 judge 调用次数统计，报告有效样本数与失败率。
+- 已完成：报告标注 Judge 模型、地址与跨模型裁判局限说明，并输出每个策略的 LLM 指标均值±std。
 
 ## 问题11的解决方案：隔离 CAG 研究基线
 
