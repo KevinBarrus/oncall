@@ -1,6 +1,7 @@
 import type { ApiErrorMessage } from "@agent-py/api-contracts";
 
 const ERROR_MESSAGES: Readonly<Record<ApiErrorMessage["code"], string>> = {
+  CHAT_SESSION_BUSY: "当前会话正在处理中，请等待本轮回答完成。",
   CHAT_CONTEXT_LIMIT_REACHED: "上下文已达到 95%，请执行手动压缩后再继续对话。",
   AUTH_INVALID_CREDENTIALS: "邮箱或密码不正确，请重新输入。",
   AUTH_FORBIDDEN: "你没有权限访问该数据。",

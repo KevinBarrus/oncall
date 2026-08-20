@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [add-ci-regression-gates](/changes/active/add-ci-regression-gates/)
 - [archive-compacted-chat-history](/changes/active/archive-compacted-chat-history/)
 - [cache-bm25-keyword-corpus](/changes/active/cache-bm25-keyword-corpus/)
 - [cache-llm-readiness-probes](/changes/active/cache-llm-readiness-probes/)

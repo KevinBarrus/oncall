@@ -155,7 +155,7 @@ class SiliconFlowRerankModel:
         if top_n < 1 or top_n > len(documents):
             raise LlmRerankError("Rerank request is invalid.")
 
-        payload = {
+        payload: dict[str, object] = {
             "model": self._model,
             "query": normalized_query,
             "documents": list(documents),

@@ -15,7 +15,13 @@ from super_ai.llm.provider import (
     build_default_llm_provider,
     build_llm_provider,
 )
-from super_ai.llm.rerank import LlmRerankError, QwenVlRerankModel, RerankModel, RerankResult, SiliconFlowRerankModel
+from super_ai.llm.rerank import (
+    LlmRerankError,
+    QwenVlRerankModel,
+    RerankModel,
+    RerankResult,
+    SiliconFlowRerankModel,
+)
 
 __all__ = [
     "ChatModel",

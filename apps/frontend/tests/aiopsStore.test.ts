@@ -186,6 +186,11 @@ function fakeClient(options: { readonly streamed?: readonly SseEvent[] } = {}): 
     }),
     streamDiagnostic: async function* (): AsyncIterable<SseEvent> {
       for (const event of options.streamed ?? events) yield event;
-    }
+    },
+    submitFeedback: async () => ({
+      rating: "helpful",
+      taskId: "diagnostic_1",
+      updatedSops: []
+    })
   };
 }

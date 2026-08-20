@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from super_ai.project_config import load_project_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.mark.local_config
 def test_local_project_configs_are_ignored_and_templates_are_sanitized() -> None:
     ignore_patterns = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "config/project.json" in ignore_patterns
@@ -30,6 +33,7 @@ def test_local_project_configs_are_ignored_and_templates_are_sanitized() -> None
     assert user_template["clsMcpServer"]["secretKey"] == ""
 
 
+@pytest.mark.local_config
 def test_project_config_contains_development_provider_config() -> None:
     base_config = json.loads(Path("../../config/project.json").read_text(encoding="utf-8"))
     user_config = json.loads(Path("../../config/user.project.json").read_text(encoding="utf-8"))
@@ -57,6 +61,7 @@ def test_project_config_contains_development_provider_config() -> None:
     assert llm["maxRetries"] == 2
 
 
+@pytest.mark.local_config
 def test_project_config_declares_real_prometheus_and_alertmanager_sources() -> None:
     config = json.loads(Path("../../config/project.json").read_text(encoding="utf-8"))
     sources = config["prometheusAlerts"]["sources"]

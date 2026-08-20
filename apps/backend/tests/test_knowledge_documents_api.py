@@ -226,7 +226,10 @@ async def test_document_upload_rejects_unsupported_and_oversized_files(
 
         assert unsupported.status_code == 400
         assert unsupported.json()["error"]["code"] == "VALIDATION_INVALID_ARGUMENT"
-        assert unsupported.json()["error"]["message"] == "仅支持 Markdown(.md) 与 PDF(.pdf) 文件。"
+        assert (
+            unsupported.json()["error"]["message"]
+            == "仅支持 Markdown(.md)、PDF(.pdf) 与 Word(.docx) 文件。"
+        )
         assert markdown_octet_stream.status_code == 201
         assert unsupported_text.status_code == 400
         assert unsupported_text.json()["error"]["code"] == "VALIDATION_INVALID_ARGUMENT"

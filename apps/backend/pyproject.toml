@@ -58,17 +58,31 @@ addopts = "-q"
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "local_config: 依赖本地 config/project.json 的测试，CI 干净环境不运行",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
+exclude = [
+    "alembic/versions/",
+    "tests/cag_runner.py",
+    "tests/ragas_evaluation.py",
+    "tests/setup_ragas_kb.py",
+]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
 
 [tool.pyright]
 include = ["src", "tests"]
+exclude = [
+    "tests/cag_runner.py",
+    "tests/ragas_evaluation.py",
+    "tests/setup_ragas_kb.py",
+]
 pythonVersion = "3.10"
 typeCheckingMode = "strict"
 venvPath = "."

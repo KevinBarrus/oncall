@@ -56,7 +56,7 @@ describe("knowledge components", () => {
     Object.defineProperty(input.element, "files", { configurable: true, value: [file] });
     await input.trigger("change");
 
-    expect(wrapper.text()).toContain("仅支持 Markdown(.md) 与 PDF(.pdf)");
+    expect(wrapper.text()).toContain("仅支持 Markdown(.md)、PDF(.pdf) 与 Word(.docx)");
     expect(wrapper.emitted("upload")).toBeUndefined();
   });
 

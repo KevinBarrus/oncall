@@ -47,6 +47,11 @@
 
 - 保留需要外部服务的端到端评测作为定时或手动 job。
 - 新增无需外部依赖的 fixture 回归集，并在 CI 强制执行解析、检索排序、权限和 SSE 合同断言。
+- 已完成：新增 `.github/workflows/ci.yml`，在 push 与 PR 上强制后端 ruff/pyright/离线 pytest 以及前端与契约的 typecheck/test/build。
+- 已完成：新增 `.github/workflows/evaluation.yml`，用 `workflow_dispatch` 与每周定时跑多策略 RAG 评测，密钥从 secrets 注入。
+- 已完成：用 `local_config` 标记依赖本地配置文件的测试并在 CI 排除，ruff/pyright 排除评测/实验脚本与历史迁移。
+- 已完成：修复离线测试与前端测试的既有漂移（docx 消息、submitFeedback、CHAT_SESSION_BUSY）。
+- 限制：仓库卫生问题（模板文件未提交、.gitignore 精确策略）不在本项处理，本地配置测试仅标记隔离。
 
 ## 问题7的解决方案：量化 AIOps 诊断质量
 

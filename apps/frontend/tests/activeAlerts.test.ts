@@ -70,6 +70,7 @@ function fakeClient(created: CreateCall[]): AiopsClient {
     listDiagnosticCases: async () => ({ items: [] }),
     listDiagnostics: async () => ({ items: [] }),
     saveDiagnosticCase: async () => { throw new Error("not used"); },
-    streamDiagnostic: async function* (): AsyncIterable<SseEvent> { yield { id: "complete", type: "complete", channel: "aiops", timestamp: "2026-07-10T08:00:02Z" }; }
+    streamDiagnostic: async function* (): AsyncIterable<SseEvent> { yield { id: "complete", type: "complete", channel: "aiops", timestamp: "2026-07-10T08:00:02Z" }; },
+    submitFeedback: async () => ({ rating: "helpful", taskId: "diagnostic_1", updatedSops: [] })
   };
 }
