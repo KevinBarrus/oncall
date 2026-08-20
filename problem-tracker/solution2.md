@@ -217,6 +217,9 @@
 
 - 提交 `uv.lock`，让开发、CI 和部署使用同一解析结果。
 - 对核心运行时依赖设置经验证的兼容范围；CAG 实验依赖单独固定，避免影响服务升级节奏。
+- 已完成：`uv.lock` 已提交并被 CI `uv sync` 使用，开发/CI/部署使用同一解析结果。
+- 已完成：`langchain` 设上限 `<2.0`（`create_agent` API 在 1.x 验证过）。
+- 已完成：eval group 的 torch/transformers/accelerate/bitsandbytes 固定版本，避免 transformers 5.x 内部 API 漂移，且不影响运行时依赖升级节奏。
 
 ## 第二轮实施状态
 

@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "stabilize-dependency-pins", link: "/changes/active/stabilize-dependency-pins/" },
   { text: "extend-ci-evaluation-gates", link: "/changes/active/extend-ci-evaluation-gates/" },
   { text: "move-eval-deps-out-of-runtime", link: "/changes/active/move-eval-deps-out-of-runtime/" },
   { text: "isolate-cag-eval-baseline", link: "/changes/active/isolate-cag-eval-baseline/" },
