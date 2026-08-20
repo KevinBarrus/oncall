@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [replace-fragile-json-extraction](/changes/active/replace-fragile-json-extraction/)
 - [align-replanner-capability](/changes/active/align-replanner-capability/)
 - [split-api-routers](/changes/active/split-api-routers/)
 - [stabilize-dependency-pins](/changes/active/stabilize-dependency-pins/)

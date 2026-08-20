@@ -196,6 +196,9 @@
 
 - 优先验证当前模型服务的 JSON Schema 或 function calling 支持，再使用 Pydantic schema 解析 Planner 和记忆输出。
 - 不支持时采用严格 JSON-only 响应与受限解析，解析失败走明确的重试或降级路径。
+- 已完成：新增 `super_ai/llm/json_output.py` 宽容 JSON 提取（整体解析 → ```json 代码块 → 括号配平），替代贪婪 `re.search(r"\{.*\}")`。
+- 已完成：Planner prompt 改为严格 JSON-only，`_validated_plan_with_sop_ids` 与记忆压缩 `_validated_memory_document` 改用宽容提取；Planner 解析失败重试一次，仍失败降级 generic plan，记忆压缩失败保留旧记忆。
+- 限制：当前 Qwen OpenAI-compatible 未验证 `with_structured_output`/function calling 稳定支持，采用方案的“严格 JSON-only + 受限解析”路径；验证支持后再升级 structured output。
 
 ## 问题25的解决方案：缓存 LLM 探活结果
 

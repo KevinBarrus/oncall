@@ -20,6 +20,7 @@ from super_ai.aiops.cases import DiagnosisCasePersistor
 from super_ai.aiops.sop_belief import DiagnosticEvidence, SopBeliefService
 from super_ai.error_catalog import ERROR_DEFINITIONS
 from super_ai.llm import LlmProvider
+from super_ai.llm.json_output import extract_json_object
 from super_ai.mcp_client import LocalMcpClient, McpClientError
 from super_ai.mcp_connections import McpConnectionService
 from super_ai.memory.repositories import (
@@ -925,23 +926,21 @@ class AiopsDiagnosticService:
     ) -> tuple[list[JsonDict], str, list[str]]:
         generic_plan = [self._generic_search_log_step(query, search_tool_name)]
         prompt = (
-            "Return JSON only with `steps` and `sopDocumentIds` arrays. "
-            "Each step has `id`, `tool`, "
-            "`arguments`, and `purpose`. `sopDocumentIds` contains only SOP document IDs actually "
-            "used by the plan. Plan a bounded AIOps investigation using only these tools: "
-            f"{json.dumps(list(available_tools))}. User query: {query}. Alert: "
+            "Plan a bounded AIOps investigation. Return exactly ONE plain JSON object with no "
+            "markdown fences and no surrounding text: "
+            '{"steps": [{"id": "...", "tool": "...", "arguments": {...}, '
+            '"purpose": "..."}], "sopDocumentIds": [...]}. '
+            "Each step must use only these tools: "
+            f"{json.dumps(list(available_tools))}. `sopDocumentIds` contains only SOP document "
+            f"IDs actually used by the plan. User query: {query}. Alert: "
             f"{json.dumps(alert)}. SOP evidence: {json.dumps(list(sop_hits))}. "
             f"No SOP matched: {str(no_sop_matched).lower()}. Prefer SearchLog for CLS evidence."
         )
-        try:
-            response = await self._llm_provider.create_chat_model().ainvoke(prompt)
-            plan, planned_sop_document_ids = _validated_plan_with_sop_ids(
-                _model_text(response),
-                available_tools,
-                [str(hit.get("documentId") or "") for hit in sop_hits],
-            )
-        except Exception:
-            plan, planned_sop_document_ids = [], []
+        plan, planned_sop_document_ids = await self._plan_with_retry(
+            prompt,
+            available_tools,
+            [str(hit.get("documentId") or "") for hit in sop_hits],
+        )
         if not plan:
             return generic_plan, "generic", []
         normalized_plan = [
@@ -955,6 +954,27 @@ class AiopsDiagnosticService:
             "SOP-backed" if planned_sop_document_ids else "generic",
             planned_sop_document_ids,
         )
+
+    async def _plan_with_retry(
+        self,
+        prompt: str,
+        available_tools: Sequence[str],
+        allowed_sop_document_ids: Sequence[str],
+    ) -> tuple[list[JsonDict], list[str]]:
+        """解析失败时重试一次，仍失败返回空计划（由调用方降级 generic plan）。"""
+        for _ in range(2):
+            try:
+                response = await self._llm_provider.create_chat_model().ainvoke(prompt)
+            except Exception:
+                return [], []
+            plan, planned_ids = _validated_plan_with_sop_ids(
+                _model_text(response),
+                available_tools,
+                allowed_sop_document_ids,
+            )
+            if plan:
+                return plan, planned_ids
+        return [], []
 
     def _generic_search_log_step(self, query: str, tool_name: str = "SearchLog") -> JsonDict:
         now_ms = int(_now().timestamp() * 1000)
@@ -1074,14 +1094,8 @@ def _validated_plan_with_sop_ids(
     available_tools: Sequence[str],
     allowed_sop_document_ids: Sequence[str],
 ) -> tuple[list[JsonDict], list[str]]:
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if match is None:
-        return [], []
-    try:
-        parsed = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return [], []
-    if not isinstance(parsed, Mapping):
+    parsed = extract_json_object(text)
+    if parsed is None:
         return [], []
     raw_steps = parsed.get("steps")
     if not isinstance(raw_steps, list):

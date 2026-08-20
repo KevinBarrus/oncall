@@ -15,6 +15,7 @@ from typing import Any, Literal, cast
 from langchain_core.messages.utils import count_tokens_approximately
 
 from super_ai.llm import LlmProvider
+from super_ai.llm.json_output import extract_json_object
 from super_ai.memory.repositories import (
     ChatMessageRecord,
     ChatSessionRecord,
@@ -300,7 +301,8 @@ class ChatMemoryService:
         )
         existing_memory = _memory_document(session.memory_summary)
         prompt = (
-            "请将以下对话压缩为结构化中文记忆。只输出合法 JSON，不要输出 Markdown。"
+            "请将以下对话压缩为结构化中文记忆。只输出一个纯 JSON 对象，不要 Markdown "
+            "代码围栏或任何额外文字。"
             'JSON 格式必须是：{"version":1,"summary":"...","items":['
             '{"category":"goal|fact|decision|todo|source|recent_context",'
             '"content":"...","sourceMessageIds":["消息 ID"]}]}。'
@@ -602,13 +604,10 @@ def _memory_source_ids(memory: JsonDict) -> set[str]:
 
 
 def _validated_memory_document(text: str, *, allowed_source_ids: set[str]) -> JsonDict | None:
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
+    parsed = extract_json_object(text)
+    if parsed is None:
         return None
-    if not isinstance(parsed, Mapping):
-        return None
-    memory = cast(Mapping[str, object], parsed)
+    memory = parsed
     if memory.get("version") != MEMORY_SCHEMA_VERSION:
         return None
     summary = memory.get("summary")

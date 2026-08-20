@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "replace-fragile-json-extraction", link: "/changes/active/replace-fragile-json-extraction/" },
   { text: "align-replanner-capability", link: "/changes/active/align-replanner-capability/" },
   { text: "split-api-routers", link: "/changes/active/split-api-routers/" },
   { text: "stabilize-dependency-pins", link: "/changes/active/stabilize-dependency-pins/" },
