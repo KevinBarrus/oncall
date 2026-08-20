@@ -491,6 +491,38 @@ class ChatMemoryRepository(Protocol):
         """List chat messages by session and optional time range."""
         ...
 
+    async def list_active_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+    ) -> list[ChatMessageRecord]:
+        """List messages that remain in the runtime hot path."""
+        ...
+
+    async def list_recent_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        limit: int,
+    ) -> list[ChatMessageRecord]:
+        """List a bounded recent window across archived and active messages."""
+        ...
+
+    async def archive_compacted_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        message_count: int,
+        memory_summary: str,
+        context_tokens: int,
+        last_compacted_at: datetime,
+    ) -> ChatSessionRecord | None:
+        """Atomically archive a compacted prefix and update its memory state."""
+        ...
+
     async def get_message(
         self,
         *,

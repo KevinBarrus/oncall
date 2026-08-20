@@ -410,6 +410,33 @@ class ChatMessageModel(Base):
     )
 
 
+class ArchivedChatMessageModel(Base):
+    """Compacted chat message retained outside the runtime hot path."""
+
+    __tablename__ = "archived_chat_messages"
+    __table_args__ = (
+        Index(
+            "ix_archived_chat_messages_owner_session_created_at",
+            "owner_user_id",
+            "session_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(40), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class AgentToolCallAuditModel(Base):
     """Persisted tenant-scoped Agent tool invocation audit entry."""
 

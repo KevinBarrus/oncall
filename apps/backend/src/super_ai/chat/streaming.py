@@ -221,7 +221,7 @@ class ChatStreamingService:
             return
         emit_event(logger, "agent.chat.started", sessionId=session.id)
 
-        history = await self._repositories.chat.list_messages(
+        history = await self._repositories.chat.list_active_messages(
             owner_user_id=owner_user_id,
             session_id=session.id,
         )
@@ -258,7 +258,7 @@ class ChatStreamingService:
             session=session,
             message_content=message_content,
         )
-        history = await self._repositories.chat.list_messages(
+        history = await self._repositories.chat.list_active_messages(
             owner_user_id=owner_user_id,
             session_id=session.id,
         )
@@ -268,7 +268,6 @@ class ChatStreamingService:
         evidence_context = await self._cross_turn_evidence_context(
             owner_user_id=owner_user_id,
             session_id=session.id,
-            history=history,
         )
         request = ChatAgentRequest(
             owner_user_id=owner_user_id,
@@ -356,7 +355,7 @@ class ChatStreamingService:
                 )
             ) or session
             if self._memory_service is not None:
-                refreshed_history = await self._repositories.chat.list_messages(
+                refreshed_history = await self._repositories.chat.list_active_messages(
                     owner_user_id=owner_user_id,
                     session_id=session.id,
                 )
@@ -480,7 +479,6 @@ class ChatStreamingService:
         *,
         owner_user_id: str,
         session_id: str,
-        history: Sequence[ChatMessageRecord],
     ) -> str:
         repository = self._repositories.tool_call_audits
         audits: list[AgentToolCallAuditRecord] = []
@@ -501,6 +499,11 @@ class ChatStreamingService:
                     f"工具 {audit.tool_name}（调用 {audit.id}）："
                     f"{audit.result_summary[:_CROSS_TURN_ITEM_LIMIT]}"
                 )
+        history = await self._repositories.chat.list_recent_messages(
+            owner_user_id=owner_user_id,
+            session_id=session_id,
+            limit=_CROSS_TURN_CITATION_LIMIT,
+        )
         citations = [
             citation
             for message in history

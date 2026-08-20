@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from super_ai.memory.models import (
     AgentToolCallAuditModel,
+    ArchivedChatMessageModel,
     ChatMessageModel,
     ChatSessionModel,
     CompressedToolEvidenceModel,
@@ -268,10 +269,26 @@ class SQLiteChatMemoryRepository:
                     )
                 ).all()
             )
+            archived_message_ids = list(
+                (
+                    await session.scalars(
+                        select(ArchivedChatMessageModel.id).where(
+                            ArchivedChatMessageModel.owner_user_id == owner_user_id,
+                            ArchivedChatMessageModel.session_id == session_id,
+                        )
+                    )
+                ).all()
+            )
             await session.execute(
                 sql_delete(ChatMessageModel).where(
                     ChatMessageModel.owner_user_id == owner_user_id,
                     ChatMessageModel.session_id == session_id,
+                )
+            )
+            await session.execute(
+                sql_delete(ArchivedChatMessageModel).where(
+                    ArchivedChatMessageModel.owner_user_id == owner_user_id,
+                    ArchivedChatMessageModel.session_id == session_id,
                 )
             )
             parent.updated_at = timestamp
@@ -280,7 +297,7 @@ class SQLiteChatMemoryRepository:
             parent.context_tokens = 0
             parent.last_compacted_at = None
             await session.commit()
-        return len(message_ids)
+        return len(message_ids) + len(archived_message_ids)
 
     async def delete_session(
         self,
@@ -298,6 +315,12 @@ class SQLiteChatMemoryRepository:
                     ChatMessageModel.session_id == session_id,
                 )
             )
+            await session.execute(
+                sql_delete(ArchivedChatMessageModel).where(
+                    ArchivedChatMessageModel.owner_user_id == owner_user_id,
+                    ArchivedChatMessageModel.session_id == session_id,
+                )
+            )
             await session.delete(row)
             await session.commit()
         return True
@@ -309,15 +332,148 @@ class SQLiteChatMemoryRepository:
         session_id: str,
         time_range: TimeRangeFilter | None = None,
     ) -> list[ChatMessageRecord]:
-        stmt = select(ChatMessageModel).where(
+        active_stmt = select(ChatMessageModel).where(
             ChatMessageModel.owner_user_id == owner_user_id,
             ChatMessageModel.session_id == session_id,
         )
-        stmt = _apply_time_range(stmt, ChatMessageModel.created_at, time_range)
-        stmt = stmt.order_by(ChatMessageModel.created_at.asc(), ChatMessageModel.id.asc())
+        archived_stmt = select(ArchivedChatMessageModel).where(
+            ArchivedChatMessageModel.owner_user_id == owner_user_id,
+            ArchivedChatMessageModel.session_id == session_id,
+        )
+        active_stmt = _apply_time_range(active_stmt, ChatMessageModel.created_at, time_range)
+        archived_stmt = _apply_time_range(
+            archived_stmt, ArchivedChatMessageModel.created_at, time_range
+        )
+        async with self._session_factory() as session:
+            active_rows = list((await session.scalars(active_stmt)).all())
+            archived_rows = list((await session.scalars(archived_stmt)).all())
+        return sorted(
+            [
+                *(_chat_message_record(row) for row in archived_rows),
+                *(_chat_message_record(row) for row in active_rows),
+            ],
+            key=lambda message: (message.created_at, message.id),
+        )
+
+    async def list_active_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+    ) -> list[ChatMessageRecord]:
+        stmt = (
+            select(ChatMessageModel)
+            .where(
+                ChatMessageModel.owner_user_id == owner_user_id,
+                ChatMessageModel.session_id == session_id,
+            )
+            .order_by(ChatMessageModel.created_at.asc(), ChatMessageModel.id.asc())
+        )
         async with self._session_factory() as session:
             rows = list((await session.scalars(stmt)).all())
         return [_chat_message_record(row) for row in rows]
+
+    async def list_recent_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        limit: int,
+    ) -> list[ChatMessageRecord]:
+        if limit <= 0:
+            return []
+        active_stmt = (
+            select(ChatMessageModel)
+            .where(
+                ChatMessageModel.owner_user_id == owner_user_id,
+                ChatMessageModel.session_id == session_id,
+            )
+            .order_by(ChatMessageModel.created_at.desc(), ChatMessageModel.id.desc())
+            .limit(limit)
+        )
+        archived_stmt = (
+            select(ArchivedChatMessageModel)
+            .where(
+                ArchivedChatMessageModel.owner_user_id == owner_user_id,
+                ArchivedChatMessageModel.session_id == session_id,
+            )
+            .order_by(
+                ArchivedChatMessageModel.created_at.desc(),
+                ArchivedChatMessageModel.id.desc(),
+            )
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            active_rows = list((await session.scalars(active_stmt)).all())
+            archived_rows = list((await session.scalars(archived_stmt)).all())
+        return sorted(
+            [
+                *(_chat_message_record(row) for row in archived_rows),
+                *(_chat_message_record(row) for row in active_rows),
+            ],
+            key=lambda message: (message.created_at, message.id),
+        )[-limit:]
+
+    async def archive_compacted_messages(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+        message_count: int,
+        memory_summary: str,
+        context_tokens: int,
+        last_compacted_at: datetime,
+    ) -> ChatSessionRecord | None:
+        if message_count <= 0:
+            raise ValueError("message_count must be positive")
+        async with self._session_factory() as session, session.begin():
+            parent = await _find_chat_session(session, owner_user_id, session_id)
+            if parent is None:
+                return None
+            rows = list(
+                (
+                    await session.scalars(
+                        select(ChatMessageModel)
+                        .where(
+                            ChatMessageModel.owner_user_id == owner_user_id,
+                            ChatMessageModel.session_id == session_id,
+                        )
+                        .order_by(ChatMessageModel.created_at.asc(), ChatMessageModel.id.asc())
+                        .limit(message_count)
+                    )
+                ).all()
+            )
+            if len(rows) != message_count:
+                raise RuntimeError("Compacted chat history no longer matches the active prefix.")
+            timestamp = utc_now()
+            session.add_all(
+                [
+                    ArchivedChatMessageModel(
+                        id=row.id,
+                        owner_user_id=row.owner_user_id,
+                        session_id=row.session_id,
+                        role=row.role,
+                        content=row.content,
+                        metadata_json=row.metadata_json,
+                        created_at=row.created_at,
+                        archived_at=timestamp,
+                    )
+                    for row in rows
+                ]
+            )
+            await session.execute(
+                sql_delete(ChatMessageModel).where(
+                    ChatMessageModel.id.in_([row.id for row in rows]),
+                    ChatMessageModel.owner_user_id == owner_user_id,
+                    ChatMessageModel.session_id == session_id,
+                )
+            )
+            parent.memory_summary = memory_summary
+            parent.compacted_message_count = 0
+            parent.context_tokens = context_tokens
+            parent.last_compacted_at = last_compacted_at
+            parent.updated_at = timestamp
+        return _chat_session_record(parent)
 
     async def get_message(
         self,
@@ -2140,7 +2296,9 @@ def _chat_session_record(row: ChatSessionModel) -> ChatSessionRecord:
     )
 
 
-def _chat_message_record(row: ChatMessageModel) -> ChatMessageRecord:
+def _chat_message_record(
+    row: ChatMessageModel | ArchivedChatMessageModel,
+) -> ChatMessageRecord:
     return ChatMessageRecord(
         id=row.id,
         owner_user_id=row.owner_user_id,

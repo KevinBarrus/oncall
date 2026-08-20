@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "archive-compacted-chat-history", link: "/changes/active/archive-compacted-chat-history/" },
   { text: "cache-bm25-keyword-corpus", link: "/changes/active/cache-bm25-keyword-corpus/" },
   { text: "cache-llm-readiness-probes", link: "/changes/active/cache-llm-readiness-probes/" },
   { text: "describe-qualified-mcp-tools", link: "/changes/active/describe-qualified-mcp-tools/" },

@@ -164,7 +164,10 @@ class ChatMemoryService:
                     errorCategory=exc.__class__.__name__,
                 )
             else:
-                uncompressed = history[current.compacted_message_count :]
+                uncompressed = await self._repositories.chat.list_active_messages(
+                    owner_user_id=owner_user_id,
+                    session_id=current.id,
+                )
                 candidate_messages = [*uncompressed, candidate]
                 candidate_tokens = estimate_context_tokens(
                     system_prompt=system_prompt,
@@ -312,20 +315,19 @@ class ChatMemoryService:
         if memory is None:
             raise RuntimeError("The model returned an invalid structured memory.")
         summary = json.dumps(memory, ensure_ascii=False, separators=(",", ":"))
-        compacted_count = session.compacted_message_count + len(messages)
         tokens = estimate_context_tokens(
             system_prompt=system_prompt,
             memory_summary=summary,
             messages=[],
             llm_provider=self._llm_provider,
         )
-        updated = await self._repositories.chat.update_memory_state(
+        updated = await self._repositories.chat.archive_compacted_messages(
             owner_user_id=owner_user_id,
             session_id=session.id,
             memory_summary=summary,
-            compacted_message_count=compacted_count,
             context_tokens=tokens,
             last_compacted_at=datetime.now(timezone.utc),
+            message_count=session.compacted_message_count + len(messages),
         )
         return updated or session
 

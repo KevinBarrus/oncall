@@ -1220,7 +1220,7 @@ def create_app(
         session = await repositories.chat.get_session(owner_user_id=user.id, session_id=session_id)
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
-        history = await repositories.chat.list_messages(
+        history = await repositories.chat.list_active_messages(
             owner_user_id=user.id, session_id=session_id
         )
         service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
@@ -1257,7 +1257,7 @@ def create_app(
         updated = await service.refresh_usage(
             owner_user_id=user.id,
             session=session,
-            history=await repositories.chat.list_messages(
+            history=await repositories.chat.list_active_messages(
                 owner_user_id=user.id, session_id=session_id
             ),
             system_prompt=prompt,
@@ -1285,7 +1285,7 @@ def create_app(
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
         if body.role == "user":
-            history = await repositories.chat.list_messages(
+            history = await repositories.chat.list_active_messages(
                 owner_user_id=user.id, session_id=session.id
             )
             service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
@@ -1833,7 +1833,7 @@ def _chat_memory_compaction_job_handler(
         )
         if session is None:
             raise RuntimeError("Chat session is unavailable.")
-        history = await repositories.chat.list_messages(
+        history = await repositories.chat.list_active_messages(
             owner_user_id=context.job.owner_user_id,
             session_id=session.id,
         )

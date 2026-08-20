@@ -382,13 +382,21 @@ async def test_context_threshold_and_manual_mode_are_session_scoped(
             history=manual_history,
             system_prompt="你是助手。",
         )
+        active_threshold_history = await repositories.chat.list_active_messages(
+            owner_user_id="user-a", session_id=threshold_session.id
+        )
+        complete_threshold_history = await repositories.chat.list_messages(
+            owner_user_id="user-a", session_id=threshold_session.id
+        )
     finally:
         await engine.dispose()
 
     assert threshold_result.session.memory_mode == "context_70_percent"
-    assert threshold_result.session.compacted_message_count == 1
+    assert threshold_result.session.compacted_message_count == 0
     assert manual_result.memory_mode == "manual"
     assert manual_result.compacted_message_count == 0
+    assert active_threshold_history == []
+    assert [message.id for message in complete_threshold_history] == ["message-chat-threshold"]
     assert len(provider.model.inputs) == 1
 
 

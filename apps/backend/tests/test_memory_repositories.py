@@ -141,6 +141,80 @@ async def test_chat_repository_denies_cross_tenant_parent_writes(
 
 
 @pytest.mark.asyncio
+async def test_chat_repository_archives_compacted_history_without_losing_it(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        session_factory = create_memory_session_factory(engine)
+        chat_repository = SQLiteChatMemoryRepository(session_factory)
+        created_at = datetime(2026, 7, 11, 9, 0, tzinfo=timezone.utc)
+        session = await chat_repository.create_session(
+            owner_user_id="user-a",
+            session_id="archive-session",
+            title="Archived history",
+            created_at=created_at,
+        )
+        for index, role in enumerate(("user", "assistant", "user"), start=1):
+            await chat_repository.append_message(
+                owner_user_id="user-a",
+                message_id=f"archived-message-{index}",
+                session_id=session.id,
+                role=role,
+                content=f"message {index}",
+                metadata={"sequence": index},
+                created_at=created_at + timedelta(minutes=index),
+            )
+
+        archived_session = await chat_repository.archive_compacted_messages(
+            owner_user_id="user-a",
+            session_id=session.id,
+            message_count=2,
+            memory_summary='{"summary":"first two messages"}',
+            context_tokens=7,
+            last_compacted_at=created_at + timedelta(minutes=4),
+        )
+        active_messages = await chat_repository.list_active_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        all_messages = await chat_repository.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        recent_messages = await chat_repository.list_recent_messages(
+            owner_user_id="user-a", session_id=session.id, limit=2
+        )
+        other_owner_messages = await chat_repository.list_messages(
+            owner_user_id="user-b", session_id=session.id
+        )
+        cleared_messages = await chat_repository.clear_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        remaining_messages = await chat_repository.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert archived_session is not None
+    assert archived_session.memory_summary == '{"summary":"first two messages"}'
+    assert archived_session.compacted_message_count == 0
+    assert [message.id for message in active_messages] == ["archived-message-3"]
+    assert [message.id for message in all_messages] == [
+        "archived-message-1",
+        "archived-message-2",
+        "archived-message-3",
+    ]
+    assert all_messages[0].metadata == {"sequence": 1}
+    assert [message.id for message in recent_messages] == [
+        "archived-message-2",
+        "archived-message-3",
+    ]
+    assert other_owner_messages == []
+    assert cleared_messages == 3
+    assert remaining_messages == []
+
+
+@pytest.mark.asyncio
 async def test_chat_execution_lease_is_exclusive_and_token_scoped(
     migrated_database_url: str,
 ) -> None:

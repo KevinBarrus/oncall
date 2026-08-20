@@ -794,6 +794,18 @@ class FailingAssistantChatRepository:
     ) -> list[ChatMessageRecord]:
         return self.messages
 
+    async def list_active_messages(
+        self,
+        **_kwargs: object,
+    ) -> list[ChatMessageRecord]:
+        return self.messages
+
+    async def list_recent_messages(
+        self,
+        **_kwargs: object,
+    ) -> list[ChatMessageRecord]:
+        return self.messages
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)

@@ -12,6 +12,7 @@ REQUIRED_MEMORY_TABLES = {
     "document_index_tasks",
     "chat_sessions",
     "chat_messages",
+    "archived_chat_messages",
     "aiops_diagnostic_tasks",
     "aiops_diagnostic_reports",
     "aiops_tool_call_audits",
@@ -53,6 +54,7 @@ def test_alembic_upgrade_creates_memory_tables(tmp_path: Path) -> None:
         "ix_chat_sessions_owner_updated_at",
         "ix_chat_sessions_execution_lease_expires_at",
         "ix_chat_messages_owner_session_created_at",
+        "ix_archived_chat_messages_owner_session_created_at",
         "ix_aiops_diagnostic_tasks_owner_created_at",
         "ix_chat_messages_session_created_at",
         "ix_aiops_diagnostic_tasks_created_at",
@@ -79,6 +81,7 @@ def test_memory_metadata_exposes_required_tables_and_json_columns() -> None:
         tables["chat_sessions"].c.keys()
     )
     assert isinstance(tables["chat_messages"].c["metadata"].type, JSON)
+    assert isinstance(tables["archived_chat_messages"].c["metadata"].type, JSON)
     assert isinstance(tables["aiops_diagnostic_tasks"].c["input_payload"].type, JSON)
     assert isinstance(tables["aiops_diagnostic_reports"].c["payload"].type, JSON)
     assert isinstance(tables["aiops_tool_call_audits"].c["arguments"].type, JSON)
