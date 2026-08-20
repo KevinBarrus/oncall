@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "maintain-rag-relevance-labels", link: "/changes/active/maintain-rag-relevance-labels/" },
   { text: "rename-rag-evaluation", link: "/changes/active/rename-rag-evaluation/" },
   { text: "add-aiops-diagnosis-evaluation", link: "/changes/active/add-aiops-diagnosis-evaluation/" },
   { text: "add-ci-regression-gates", link: "/changes/active/add-ci-regression-gates/" },

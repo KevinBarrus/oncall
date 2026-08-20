@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [maintain-rag-relevance-labels](/changes/active/maintain-rag-relevance-labels/)
 - [rename-rag-evaluation](/changes/active/rename-rag-evaluation/)
 - [add-aiops-diagnosis-evaluation](/changes/active/add-aiops-diagnosis-evaluation/)
 - [add-ci-regression-gates](/changes/active/add-ci-regression-gates/)

@@ -73,6 +73,7 @@ _DATA_DIR = _TEST_DIR / "data"
 _QA_FILE = _DATA_DIR / "rag_test_qa.json"
 _RESULTS_DIR = _DATA_DIR / "eval_results"
 _ENV_FILE = _TEST_DIR / ".env.test"
+FACT_MATCH_RECALL_THRESHOLD = 0.4
 
 load_dotenv(_ENV_FILE)
 
@@ -400,6 +401,54 @@ def _token_overlap(text_a: str, text_b: str) -> float:
     return len(tokens_a & tokens_b) / min(len(tokens_a), len(tokens_b))
 
 
+def _token_recall(text_a: str, text_b: str) -> float:
+    """text_a 的 token 被 text_b 覆盖的比例（jieba + whitespace）。"""
+    tokens_a = _tokenize(text_a)
+    tokens_b = _tokenize(text_b)
+    if not tokens_a:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a)
+
+
+_FACT_STOP_TOKENS = frozenset(
+    {
+        "的", "为", "是", "在", "了", "和", "并", "或", "与", "以及", "及",
+        "超过", "低于", "高于", "持续", "分钟", "阈值", "配置", "进行",
+        "需要", "要求", "设置", "使用", "触发", "达到", "一个", "分别",
+        "什么", "哪些", "多少", "如何", "为什么", "是否", "团队", "告警",
+        "故障", "排查", "问题", "情况", "相关", "造成", "导致", "影响",
+        "可以", "应该", "通过", "根据", "按照", "规定", "触发", "服务",
+    }
+)
+
+
+def _is_pure_symbol(token: str) -> bool:
+    return bool(token) and not any(char.isalnum() for char in token)
+
+
+def _fact_content_tokens(text: str) -> set[str]:
+    """提取事实的内容 token：过滤单字符、纯符号和常见功能词。"""
+    return {
+        token
+        for token in _tokenize(text)
+        if len(token) >= 2 and not _is_pure_symbol(token) and token not in _FACT_STOP_TOKENS
+    }
+
+
+def _fact_matches_chunk(fact: str, chunk_content: str) -> bool:
+    """事实与 chunk 内容是否相关：内容 token 召回达阈值（容忍改写措辞）。
+
+    用 jieba token 集合的召回率替代精确子串匹配，使改写（paraphrase）后的
+    事实仍能匹配到对应 chunk；过滤单字符、符号和功能词避免短事实误判。
+    """
+    fact_tokens = _fact_content_tokens(fact)
+    if not fact_tokens:
+        return False
+    chunk_tokens = _tokenize(chunk_content)
+    matched = fact_tokens & chunk_tokens
+    return len(matched) / len(fact_tokens) >= FACT_MATCH_RECALL_THRESHOLD
+
+
 def _manual_relevance_labels(
     chunks: Sequence[EvalRetrievedChunk],
     qa: Mapping[str, Any],
@@ -411,10 +460,7 @@ def _manual_relevance_labels(
     for chunk in chunks:
         if chunk.source not in expected:
             labels.append(0)
-        elif any(
-            _normalise_evidence(fact) in _normalise_evidence(chunk.content)
-            for fact in facts
-        ):
+        elif any(_fact_matches_chunk(fact, chunk.content) for fact in facts):
             labels.append(2)
         else:
             labels.append(1)
@@ -455,8 +501,8 @@ def _atomic_fact_recall_at_k(
     facts = cast(list[str], qa["atomic_facts"])
     if not facts:
         return 0.0
-    evidence = _normalise_evidence("\n".join(chunk.content for chunk in chunks[:k]))
-    return sum(_normalise_evidence(fact) in evidence for fact in facts) / len(facts)
+    evidence = "\n".join(chunk.content for chunk in chunks[:k])
+    return sum(_fact_matches_chunk(fact, evidence) for fact in facts) / len(facts)
 
 
 def _normalise_evidence(value: str) -> str:
@@ -1398,6 +1444,25 @@ class TestRagEvaluation:
         assert sum(distribution.values()) == len(_load_qa_pairs())
         assert any(key.startswith("answerable:") for key in distribution)
         assert any(key.startswith("unanswerable:") for key in distribution)
+
+    def test_qa_dataset_includes_paraphrase_and_cross_document_cases(self) -> None:
+        pairs = _load_qa_pairs()
+        questions = "\n".join(str(qa["question"]) for qa in pairs)
+        assert "接口延迟达到什么程度" in questions
+        assert "连接池配置错误造成过哪些连带影响" in questions
+        assert "哪些上层服务会首先出现故障" in questions
+        assert any(" + " in str(qa.get("reference", "")) for qa in pairs)
+        assert any(str(qa.get("reference", "")) == "无" for qa in pairs)
+
+    def test_fact_matches_chunk_tolerates_paraphrase(self) -> None:
+        fact = "api-gateway 的 P99 延迟高于 800 毫秒"
+        chunk = "api-gateway 的 P99 延迟阈值是超过 800ms 持续 5 分钟"
+        assert _fact_matches_chunk(fact, chunk) is True
+
+    def test_fact_matches_chunk_rejects_unrelated_content(self) -> None:
+        fact = "P0 需要在 3 分钟内确认并 15 分钟介入"
+        chunk = "redis cluster config with maxmemory 4gb"
+        assert _fact_matches_chunk(fact, chunk) is False
 
     def test_gold_document_baseline_uses_source_fixture_not_standard_answer(self) -> None:
         qa = _load_qa_pairs()[0]
