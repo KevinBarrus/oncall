@@ -521,7 +521,6 @@ async def test_ready_endpoint_reports_milvus_readiness_without_startup_connectio
     assert vector_store.health_checks == 1
 
 
-@pytest.mark.local_config
 def test_project_config_contains_milvus_settings() -> None:
     config = json.loads(Path("../../config/project.json").read_text(encoding="utf-8"))
     vector_store = config["vectorStore"]

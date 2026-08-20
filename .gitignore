@@ -15,7 +15,8 @@ coverage/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 openspec从0到1项目实战的提示词.md
-config/
+config/project.json
+config/user.project.json
 apps/backend/tests/data/eval_results/
 apps/backend/tests/data/cache_knowledge.pt
 apps/backend/tests/.env.test

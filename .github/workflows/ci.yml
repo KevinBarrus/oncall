@@ -24,6 +24,18 @@ jobs:
           enable-cache: true
       - name: Sync dependencies
         run: uv sync
+      - name: Prepare test config
+        working-directory: .
+        run: |
+          cp config/project.template.json config/project.json
+          cp config/user.project.template.json config/user.project.json
+          python - <<'PY'
+          import json
+          path = "config/user.project.json"
+          data = json.load(open(path))
+          data["llm"]["apiKey"] = "sk-ci-test"
+          json.dump(data, open(path, "w"))
+          PY
       - name: Ruff
         run: uv run ruff check .
       - name: Pyright

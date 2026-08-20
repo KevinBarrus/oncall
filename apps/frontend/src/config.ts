@@ -1,5 +1,5 @@
-import projectConfig from "../../../config/project.json";
-import userProjectConfig from "../../../config/user.project.json";
+import projectConfig from "../../../config/project.template.json";
+import userProjectConfig from "../../../config/user.project.template.json";
 
 const mergedProjectConfig = deepMerge(projectConfig, userProjectConfig);
 
