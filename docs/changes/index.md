@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [split-api-routers](/changes/active/split-api-routers/)
 - [stabilize-dependency-pins](/changes/active/stabilize-dependency-pins/)
 - [extend-ci-evaluation-gates](/changes/active/extend-ci-evaluation-gates/)
 - [move-eval-deps-out-of-runtime](/changes/active/move-eval-deps-out-of-runtime/)

@@ -21,7 +21,6 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -36,8 +35,10 @@ from super_ai.alerts import (
     AlertProviderError,
     build_alertmanager_alert_provider,
 )
+from super_ai.api.dependencies import current_user, memory_repositories
+from super_ai.api.routers import auth as auth_router
 from super_ai.auth.repositories import UserRecord
-from super_ai.auth.service import AuthError, AuthResult, AuthService
+from super_ai.auth.service import AuthService
 from super_ai.auth.sqlite import SQLiteAuthRepository
 from super_ai.chat import (
     ChatAgentRunner,
@@ -133,22 +134,7 @@ from super_ai.vector_store import (
 from .observability import RequestMetrics
 from .responses import ApiErrorException, error_response, success_response
 
-bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
-BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]
-
-
-class RegisterRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    email: str
-    display_name: str = Field(alias="displayName")
-    password: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
 
 
 class CreateChatSessionRequest(BaseModel):
@@ -453,51 +439,10 @@ def create_app(
             status_code=200 if is_valid and is_ready else 503,
         )
 
-    @app.post("/auth/register")
-    async def register(request: Request, body: RegisterRequest) -> object:
-        service = _auth_service(request)
-        try:
-            result = await service.register(
-                email=body.email,
-                display_name=body.display_name,
-                password=body.password,
-            )
-        except AuthError as exc:
-            raise _api_error(exc) from exc
-        return success_response(request, _auth_result_payload(result), status_code=201)
-
-    @app.post("/auth/login")
-    async def login(request: Request, body: LoginRequest) -> object:
-        service = _auth_service(request)
-        try:
-            result = await service.login(email=body.email, password=body.password)
-        except AuthError as exc:
-            raise _api_error(exc) from exc
-        return success_response(request, _auth_result_payload(result))
-
-    @app.post("/auth/logout")
-    async def logout(
-        request: Request,
-        credentials: BearerCredentials,
-    ) -> object:
-        token = _bearer_token(credentials)
-        try:
-            await _auth_service(request).logout(token)
-        except AuthError as exc:
-            raise _api_error(exc) from exc
-        return success_response(request, {"revoked": True})
-
-    @app.get("/auth/me")
-    async def current_user(
-        request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
-    ) -> object:
-        return success_response(request, _user_payload(user))
-
     @app.get("/background-jobs")
     async def list_background_jobs(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         jobs = await _background_job_repository(request).list(owner_user_id=user.id)
         return success_response(request, {"items": [_background_job_payload(job) for job in jobs]})
@@ -506,7 +451,7 @@ def create_app(
     async def get_background_job(
         request: Request,
         job_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         job = await _background_job_repository(request).get(
             owner_user_id=user.id,
@@ -520,7 +465,7 @@ def create_app(
     async def cancel_background_job(
         request: Request,
         job_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         job = await _background_job_repository(request).request_cancel(
             owner_user_id=user.id,
@@ -535,7 +480,7 @@ def create_app(
     async def retry_background_job(
         request: Request,
         job_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         job = await _background_job_repository(request).retry(
             owner_user_id=user.id,
@@ -550,7 +495,7 @@ def create_app(
     @app.get("/feedback")
     async def list_feedback(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
         target_type: Annotated[str, Query(alias="targetType")],
         target_id: Annotated[str, Query(alias="targetId")],
     ) -> object:
@@ -571,7 +516,7 @@ def create_app(
     async def upsert_feedback(
         request: Request,
         body: UpsertFeedbackRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             feedback = await _feedback_service(request).upsert(
@@ -592,7 +537,7 @@ def create_app(
     async def delete_feedback(
         request: Request,
         feedback_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             deleted = await _feedback_service(request).delete(
@@ -608,7 +553,7 @@ def create_app(
     @app.get("/mcp/connections")
     async def list_mcp_connections(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         records = await _mcp_connection_service(request).list(owner_user_id=user.id)
         return success_response(
@@ -620,7 +565,7 @@ def create_app(
     async def create_mcp_connection(
         request: Request,
         body: McpConnectionMutationRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             record = await _mcp_connection_service(request).create(
@@ -636,7 +581,7 @@ def create_app(
         request: Request,
         connection_id: str,
         body: McpConnectionMutationRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             record = await _mcp_connection_service(request).update(
@@ -652,7 +597,7 @@ def create_app(
     async def delete_mcp_connection(
         request: Request,
         connection_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         deleted = await _mcp_connection_service(request).delete(
             owner_user_id=user.id,
@@ -666,7 +611,7 @@ def create_app(
     async def check_mcp_connection(
         request: Request,
         connection_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             record, tools = await _mcp_connection_service(request).check(
@@ -694,7 +639,7 @@ def create_app(
     @app.get("/knowledge-bases")
     async def list_knowledge_bases(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         return success_response(
             request,
@@ -713,10 +658,10 @@ def create_app(
     async def list_knowledge_documents(
         request: Request,
         knowledge_base_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        documents = await _memory_repositories(request).documents.list_documents(
+        documents = await memory_repositories(request).documents.list_documents(
             owner_user_id=user.id,
             knowledge_base_id=knowledge_base_id,
         )
@@ -729,7 +674,7 @@ def create_app(
     async def upload_knowledge_document(
         request: Request,
         knowledge_base_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
         file: Annotated[UploadFile, File()],
         overwrite: Annotated[bool, Form()] = False,
         chunking: Annotated[str, Form()] = "",
@@ -744,7 +689,7 @@ def create_app(
                 raise ApiErrorException("VALIDATION_INVALID_ARGUMENT", str(exc)) from exc
             chunking_configuration = _parse_chunking_configuration(chunking)
             content_hash = f"sha256:{sha256(content).hexdigest()}"
-            repositories = _memory_repositories(request)
+            repositories = memory_repositories(request)
             duplicate = await repositories.documents.find_active_by_hash(
                 owner_user_id=user.id,
                 knowledge_base_id=knowledge_base_id,
@@ -795,10 +740,10 @@ def create_app(
         request: Request,
         knowledge_base_id: str,
         document_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        document = await _memory_repositories(request).documents.get_document(
+        document = await memory_repositories(request).documents.get_document(
             owner_user_id=user.id,
             knowledge_base_id=knowledge_base_id,
             document_id=document_id,
@@ -812,10 +757,10 @@ def create_app(
         request: Request,
         knowledge_base_id: str,
         document_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        document = await _memory_repositories(request).documents.get_document(
+        document = await memory_repositories(request).documents.get_document(
             owner_user_id=user.id, knowledge_base_id=knowledge_base_id, document_id=document_id
         )
         if document is None:
@@ -852,10 +797,10 @@ def create_app(
         request: Request,
         knowledge_base_id: str,
         document_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         document = await repositories.documents.get_document(
             owner_user_id=user.id,
             knowledge_base_id=knowledge_base_id,
@@ -883,17 +828,17 @@ def create_app(
         request: Request,
         knowledge_base_id: str,
         document_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        document = await _memory_repositories(request).documents.get_document(
+        document = await memory_repositories(request).documents.get_document(
             owner_user_id=user.id,
             knowledge_base_id=knowledge_base_id,
             document_id=document_id,
         )
         if document is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
-        task = await _memory_repositories(request).document_index_tasks.create_task(
+        task = await memory_repositories(request).document_index_tasks.create_task(
             owner_user_id=user.id,
             task_id=f"index_task_{uuid4().hex}",
             knowledge_base_id=knowledge_base_id,
@@ -913,10 +858,10 @@ def create_app(
         knowledge_base_id: str,
         document_id: str,
         task_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        task = await _memory_repositories(request).document_index_tasks.get_task(
+        task = await memory_repositories(request).document_index_tasks.get_task(
             owner_user_id=user.id,
             task_id=task_id,
         )
@@ -936,10 +881,10 @@ def create_app(
         knowledge_base_id: str,
         document_id: str,
         task_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
-        previous = await _memory_repositories(request).document_index_tasks.get_task(
+        previous = await memory_repositories(request).document_index_tasks.get_task(
             owner_user_id=user.id,
             task_id=task_id,
         )
@@ -951,7 +896,7 @@ def create_app(
             raise ApiErrorException("AUTH_FORBIDDEN")
         if previous.status != "failed":
             raise ApiErrorException("BUSINESS_CONFLICT")
-        task = await _memory_repositories(request).document_index_tasks.create_retry(
+        task = await memory_repositories(request).document_index_tasks.create_retry(
             owner_user_id=user.id,
             task_id=f"index_task_{uuid4().hex}",
             retry_of_task_id=previous.id,
@@ -971,10 +916,10 @@ def create_app(
     async def create_chat_session(
         request: Request,
         body: CreateChatSessionRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         title = _normalize_chat_title(body.title)
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.create_session(
             owner_user_id=user.id,
             session_id=f"chat_{uuid4().hex}",
@@ -988,7 +933,7 @@ def create_app(
 
     @app.get("/chat/configuration")
     async def get_chat_configuration(
-        request: Request, user: Annotated[UserRecord, Depends(_current_user)]
+        request: Request, user: Annotated[UserRecord, Depends(current_user)]
     ) -> object:
         prompts, skills, record = await _read_chat_configuration(request, owner_user_id=user.id)
         return success_response(request, _chat_configuration_payload(prompts, skills, record))
@@ -997,7 +942,7 @@ def create_app(
     async def update_chat_configuration(
         request: Request,
         body: UpdateChatAssemblyConfigurationRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         prompt_repository = _chat_prompt_repository(request)
         skill_repository = _chat_skill_repository(request)
@@ -1025,7 +970,7 @@ def create_app(
     async def create_chat_prompt(
         request: Request,
         body: CreateChatPromptRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             label, content = validate_chat_prompt_content(body.label, body.content)
@@ -1044,7 +989,7 @@ def create_app(
         request: Request,
         prompt_id: str,
         body: UpdateChatPromptRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         try:
             label, content = validate_chat_prompt_content(body.label, body.content)
@@ -1064,7 +1009,7 @@ def create_app(
     async def delete_chat_prompt(
         request: Request,
         prompt_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         prompt_repository = _chat_prompt_repository(request)
         configuration_repository = _chat_configuration_repository(request)
@@ -1094,7 +1039,7 @@ def create_app(
     async def upload_chat_skill(
         request: Request,
         file: Annotated[UploadFile, File()],
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         content = await file.read()
         try:
@@ -1116,7 +1061,7 @@ def create_app(
     async def delete_chat_skill(
         request: Request,
         skill_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         deleted = await _chat_skill_repository(request).delete(
             owner_user_id=user.id,
@@ -1147,9 +1092,9 @@ def create_app(
     @app.get("/chat/sessions")
     async def list_chat_sessions(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        sessions = await _memory_repositories(request).chat.list_sessions(owner_user_id=user.id)
+        sessions = await memory_repositories(request).chat.list_sessions(owner_user_id=user.id)
         return success_response(
             request,
             {
@@ -1164,9 +1109,9 @@ def create_app(
     async def get_chat_session(
         request: Request,
         session_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
             owner_user_id=user.id,
             session_id=session_id,
@@ -1189,9 +1134,9 @@ def create_app(
     async def list_chat_tool_call_audits(
         request: Request,
         session_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
             owner_user_id=user.id,
             session_id=session_id,
@@ -1212,11 +1157,11 @@ def create_app(
         request: Request,
         session_id: str,
         body: UpdateChatMemoryRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         if body.mode not in SUPPORTED_CHAT_MEMORY_MODES:
             raise ApiErrorException("VALIDATION_INVALID_ARGUMENT")
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(owner_user_id=user.id, session_id=session_id)
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
@@ -1247,9 +1192,9 @@ def create_app(
     async def compact_chat_memory(
         request: Request,
         session_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(owner_user_id=user.id, session_id=session_id)
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
@@ -1275,9 +1220,9 @@ def create_app(
         request: Request,
         session_id: str,
         body: AppendChatMessageRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
             owner_user_id=user.id,
             session_id=session_id,
@@ -1328,9 +1273,9 @@ def create_app(
         request: Request,
         session_id: str,
         body: StreamChatMessageRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> StreamingResponse:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
             owner_user_id=user.id,
             session_id=session_id,
@@ -1363,9 +1308,9 @@ def create_app(
     async def clear_chat_messages(
         request: Request,
         session_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
             owner_user_id=user.id,
             session_id=session_id,
@@ -1389,9 +1334,9 @@ def create_app(
     async def delete_chat_session(
         request: Request,
         session_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        deleted = await _memory_repositories(request).chat.delete_session(
+        deleted = await memory_repositories(request).chat.delete_session(
             owner_user_id=user.id,
             session_id=session_id,
         )
@@ -1403,9 +1348,9 @@ def create_app(
     async def create_aiops_diagnostic(
         request: Request,
         body: CreateAiopsDiagnosticRequest,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        task = await _memory_repositories(request).diagnostics.create_task(
+        task = await memory_repositories(request).diagnostics.create_task(
             owner_user_id=user.id,
             task_id=f"diagnostic_{uuid4().hex}",
             status="accepted",
@@ -1435,7 +1380,7 @@ def create_app(
     @app.get("/aiops/alerts/active")
     async def list_active_alerts(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         del user
         try:
@@ -1454,11 +1399,11 @@ def create_app(
     @app.get("/aiops/diagnostics")
     async def list_aiops_diagnostics(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
         start_at: Annotated[datetime | None, Query(alias="startAt")] = None,
         end_at: Annotated[datetime | None, Query(alias="endAt")] = None,
     ) -> object:
-        tasks = await _memory_repositories(request).diagnostics.list_tasks(
+        tasks = await memory_repositories(request).diagnostics.list_tasks(
             owner_user_id=user.id,
             time_range=TimeRangeFilter(start_at=start_at, end_at=end_at),
         )
@@ -1470,9 +1415,9 @@ def create_app(
     @app.get("/aiops/diagnostic-cases")
     async def list_aiops_diagnostic_cases(
         request: Request,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        cases = await _memory_repositories(request).diagnostics.list_cases(owner_user_id=user.id)
+        cases = await memory_repositories(request).diagnostics.list_cases(owner_user_id=user.id)
         return success_response(
             request,
             {"items": [_diagnostic_case_payload(case) for case in cases]},
@@ -1482,9 +1427,9 @@ def create_app(
     async def get_aiops_diagnostic_case(
         request: Request,
         case_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        case = await _memory_repositories(request).diagnostics.get_case(
+        case = await memory_repositories(request).diagnostics.get_case(
             owner_user_id=user.id,
             case_id=case_id,
         )
@@ -1496,15 +1441,15 @@ def create_app(
     async def get_aiops_diagnostic(
         request: Request,
         diagnostic_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        task = await _memory_repositories(request).diagnostics.get_task(
+        task = await memory_repositories(request).diagnostics.get_task(
             owner_user_id=user.id,
             task_id=diagnostic_id,
         )
         if task is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
-        reports = await _memory_repositories(request).diagnostics.list_reports(
+        reports = await memory_repositories(request).diagnostics.list_reports(
             owner_user_id=user.id,
             task_id=task.id,
         )
@@ -1514,7 +1459,7 @@ def create_app(
     async def submit_diagnostic_feedback(
         request: Request,
         diagnostic_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
         body = await request.json()
         rating = str(body.get("rating") or "")
@@ -1525,7 +1470,7 @@ def create_app(
                 message="rating must be 'helpful' or 'not_helpful'",
             )
         # verify ownership
-        task = await _memory_repositories(request).diagnostics.get_task(
+        task = await memory_repositories(request).diagnostics.get_task(
             owner_user_id=user.id,
             task_id=diagnostic_id,
         )
@@ -1575,9 +1520,9 @@ def create_app(
     async def get_aiops_evidence_chain(
         request: Request,
         diagnostic_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         task = await repositories.diagnostics.get_task(
             owner_user_id=user.id,
             task_id=diagnostic_id,
@@ -1628,9 +1573,9 @@ def create_app(
     async def stream_aiops_diagnostic(
         request: Request,
         diagnostic_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> StreamingResponse:
-        task = await _memory_repositories(request).diagnostics.get_task(
+        task = await memory_repositories(request).diagnostics.get_task(
             owner_user_id=user.id,
             task_id=diagnostic_id,
         )
@@ -1678,9 +1623,9 @@ def create_app(
     async def save_aiops_diagnostic_case(
         request: Request,
         diagnostic_id: str,
-        user: Annotated[UserRecord, Depends(_current_user)],
+        user: Annotated[UserRecord, Depends(current_user)],
     ) -> object:
-        repositories = _memory_repositories(request)
+        repositories = memory_repositories(request)
         task = await repositories.diagnostics.get_task(owner_user_id=user.id, task_id=diagnostic_id)
         if task is None or task.status != "succeeded":
             raise ApiErrorException("AUTH_FORBIDDEN")
@@ -1738,26 +1683,9 @@ def create_app(
             status_code=202,
         )
 
+    app.include_router(auth_router.router)
+
     return app
-
-
-async def _current_user(
-    request: Request,
-    credentials: BearerCredentials,
-) -> UserRecord:
-    token = _bearer_token(credentials)
-    try:
-        return await _auth_service(request).authenticate_token(token)
-    except AuthError as exc:
-        raise _api_error(exc) from exc
-
-
-def _auth_service(request: Request) -> AuthService:
-    return request.app.state.auth_service
-
-
-def _memory_repositories(request: Request) -> MemoryRepositories:
-    return request.app.state.memory_repositories
 
 
 def _background_job_repository(request: Request) -> BackgroundJobRepository:
@@ -1780,7 +1708,7 @@ def _background_job_runtime_from_app(app: FastAPI) -> BackgroundJobRuntime:
 
 
 def _feedback_service(request: Request) -> UserFeedbackService:
-    return UserFeedbackService(_memory_repositories(request))
+    return UserFeedbackService(memory_repositories(request))
 
 
 def _mcp_connection_service(request: Request) -> McpConnectionService:
@@ -1789,7 +1717,7 @@ def _mcp_connection_service(request: Request) -> McpConnectionService:
         return service
     mcp_config = project_config_section("mcp", config_path=request.app.state.project_config_path)
     service = McpConnectionService(
-        _memory_repositories(request),
+        memory_repositories(request),
         default_url=required_str(mcp_config, "clsSseUrl"),
         default_timeout_seconds=required_int(mcp_config, "timeoutSeconds"),
         default_retries=required_int(mcp_config, "retries"),
@@ -1906,7 +1834,7 @@ def _request_for_app(app: FastAPI) -> Request:
 
 
 async def _cancel_background_resource(request: Request, job: BackgroundJobRecord) -> None:
-    repositories = _memory_repositories(request)
+    repositories = memory_repositories(request)
     if job.resource_type == "document_index_task":
         await repositories.document_index_tasks.mark_cancelled(
             owner_user_id=job.owner_user_id,
@@ -2209,7 +2137,7 @@ def _chat_memory_service(request: Request) -> ChatMemoryService:
         )
 
     return ChatMemoryService(
-        repositories=_memory_repositories(request),
+        repositories=memory_repositories(request),
         llm_provider=_llm_provider(request),
         context_window_tokens=_context_window_tokens(request),
         schedule_compaction=schedule,
@@ -2238,7 +2166,7 @@ async def _chat_memory_context(
 ) -> tuple[ChatMemoryService, str]:
     service = _chat_memory_service(request)
     prompt_builder = ChatStreamingService(
-        repositories=_memory_repositories(request),
+        repositories=memory_repositories(request),
         agent_runner=_chat_agent_runner(request),
         memory_service=service,
     )
@@ -2256,8 +2184,8 @@ def _chat_agent_runner(request: Request) -> ChatAgentRunner:
         runner = LangChainChatAgentRunner(
             llm_provider=_llm_provider(request),
             retrieval_tool=retrieval_tool,
-            document_repository=_memory_repositories(request).documents,
-            compressed_tool_evidence=_memory_repositories(request).compressed_tool_evidence,
+            document_repository=memory_repositories(request).documents,
+            compressed_tool_evidence=memory_repositories(request).compressed_tool_evidence,
             mcp_client_provider=_mcp_connection_service(request),
         )
         request.app.state.chat_agent_runner = runner
@@ -2291,7 +2219,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
             config_path=request.app.state.project_config_path,
         )
         runner = AiopsDiagnosticService(
-            repositories=_memory_repositories(request),
+            repositories=memory_repositories(request),
             llm_provider=_llm_provider(request),
             retrieval_tool=KnowledgeRetrievalTool(
                 embedding_model=_embedding_model(request),
@@ -2302,7 +2230,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
             cls_region=required_str(cls_log_config, "region"),
             cls_topic_id=required_str(cls_log_config, "topicId"),
             case_persistor=DiagnosisCasePersistor(
-                repositories=_memory_repositories(request),
+                repositories=memory_repositories(request),
                 index_task_scheduler=_index_task_scheduler(request),
             ),
             sop_belief_service=_sop_belief_service(request),
@@ -2314,7 +2242,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
 def _sop_belief_service(request: Request) -> SopBeliefService:
     service = getattr(request.app.state, "sop_belief_service", None)
     if service is None:
-        repository = _memory_repositories(request).sop_beliefs
+        repository = memory_repositories(request).sop_beliefs
         if repository is None:
             raise RuntimeError("SOP belief repository is unavailable.")
         service = SopBeliefService(repository)
@@ -2324,7 +2252,7 @@ def _sop_belief_service(request: Request) -> SopBeliefService:
 
 def _document_indexing_service(request: Request) -> DocumentIndexingService:
     return DocumentIndexingService(
-        repositories=_memory_repositories(request),
+        repositories=memory_repositories(request),
         embedding_model=_embedding_model(request),
         vector_store=_document_vector_store(request),
     )
@@ -2344,33 +2272,6 @@ def _document_indexing_service_from_app(app: FastAPI) -> DocumentIndexingService
 
 def _index_task_scheduler(request: Request) -> DocumentIndexTaskScheduler:
     return cast(DocumentIndexTaskScheduler, request.app.state.index_task_scheduler)
-
-
-def _bearer_token(credentials: HTTPAuthorizationCredentials | None) -> str:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise ApiErrorException("AUTH_UNAUTHENTICATED")
-    return credentials.credentials
-
-
-def _api_error(exc: AuthError) -> ApiErrorException:
-    return ApiErrorException(exc.code, str(exc))
-
-
-def _user_payload(user: UserRecord) -> dict[str, str]:
-    return {
-        "id": user.id,
-        "email": user.email,
-        "displayName": user.display_name,
-        "createdAt": user.created_at.isoformat(),
-    }
-
-
-def _auth_result_payload(result: AuthResult) -> dict[str, object]:
-    return {
-        "user": _user_payload(result.user),
-        "accessToken": result.access_token,
-        "tokenType": result.token_type,
-    }
 
 
 def _chat_session_payload(
@@ -2698,21 +2599,21 @@ def _decode_indexable_document(record: KnowledgeDocumentRecord) -> str:
 
 
 def _chat_configuration_repository(request: Request) -> UserChatConfigurationRepository:
-    repository = _memory_repositories(request).chat_configurations
+    repository = memory_repositories(request).chat_configurations
     if repository is None:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR")
     return repository
 
 
 def _chat_prompt_repository(request: Request) -> UserChatPromptRepository:
-    repository = _memory_repositories(request).chat_prompts
+    repository = memory_repositories(request).chat_prompts
     if repository is None:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR")
     return repository
 
 
 def _chat_skill_repository(request: Request) -> UserChatSkillRepository:
-    repository = _memory_repositories(request).chat_skills
+    repository = memory_repositories(request).chat_skills
     if repository is None:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR")
     return repository

@@ -163,6 +163,9 @@
 
 - 新增或修改路由时优先迁移到 auth、chat、knowledge、aiops、mcp 等 `APIRouter`。
 - 保持现有依赖、envelope 和契约不变，不做一次性 2796 行文件重写。
+- 已完成：建立 `api/dependencies.py` 共享依赖提供者与 `api/routers/` 包，将 auth 域 4 个路由迁移到 `routers/auth.py`，app.py 以 `include_router` 挂载，行为与契约不变。
+- 已完成：迁移后 app.py 由 2887 行降至 2788 行，认证相关辅助函数与请求模型内聚到 domain 模块。
+- 限制：chat/knowledge/aiops/mcp 等剩余路由仍留在 app.py，按“新增或修改路由时优先迁移”的原则渐进处理。
 
 ## 问题21的解决方案：移动评测专属依赖
 

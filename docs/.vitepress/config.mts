@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "split-api-routers", link: "/changes/active/split-api-routers/" },
   { text: "stabilize-dependency-pins", link: "/changes/active/stabilize-dependency-pins/" },
   { text: "extend-ci-evaluation-gates", link: "/changes/active/extend-ci-evaluation-gates/" },
   { text: "move-eval-deps-out-of-runtime", link: "/changes/active/move-eval-deps-out-of-runtime/" },
