@@ -68,7 +68,7 @@ export interface ReferenceSourceSseEvent extends SseEventBase<"reference.source"
 export interface TaskStatusSseEvent extends SseEventBase<"task.status"> {
   readonly task: {
     readonly id: string;
-    readonly status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+    readonly status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
     readonly progress?: number;
     readonly message?: string;
   };

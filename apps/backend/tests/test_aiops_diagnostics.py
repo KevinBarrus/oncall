@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -144,14 +145,18 @@ class FakeChatModel:
         report_response: str = f"```markdown\n{REPORT_MARKDOWN}\n```",
         report_error: Exception | None = None,
         plan_response: str = '{"steps": []}',
+        plan_delay: float = 0.0,
     ) -> None:
         self.report_response = report_response
         self.report_error = report_error
         self.plan_response = plan_response
+        self.plan_delay = plan_delay
         self.inputs: list[object] = []
 
     async def ainvoke(self, input: object) -> object:
         self.inputs.append(input)
+        if self.plan_delay:
+            await asyncio.sleep(self.plan_delay)
         if "AIOps 诊断报告生成器" in str(input):
             if self.report_error is not None:
                 raise self.report_error
@@ -436,6 +441,87 @@ async def test_diagnostic_runs_sop_first_persists_evidence_and_audits(
     assert "Investigate worker CPU alarm" not in "\n".join(
         record.message for record in caplog.records
     )
+
+
+async def test_diagnostic_graph_timeout_persists_timed_out_task_with_evidence(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        task = await repositories.diagnostics.create_task(
+            owner_user_id="user-a",
+            task_id="diagnostic-timeout",
+            status="accepted",
+            query="Investigate worker CPU alarm",
+            input_payload={
+                "alert": {
+                    "alertName": "WorkerCpuHigh",
+                    "severity": "critical",
+                    "service": "worker",
+                }
+            },
+        )
+        embedding = FakeEmbeddingModel()
+        retrieval = KnowledgeRetrievalTool(
+            embedding_model=embedding,
+            vector_store=FakeVectorStore([]),
+            rerank_model=FakeRerankModel(),
+        )
+        mcp = FakeMcpClient()
+        scheduler = FakeCaseIndexScheduler()
+        provider = FakeLlmProvider()
+        provider.chat_model.plan_delay = 5.0
+        service = AiopsDiagnosticService(
+            repositories=repositories,
+            llm_provider=cast(LlmProvider, provider),
+            retrieval_tool=retrieval,
+            mcp_client=cast(LocalMcpClient, mcp),
+            cls_region="ap-guangzhou",
+            cls_topic_id="topic-a",
+            case_persistor=DiagnosisCasePersistor(
+                repositories=repositories,
+                index_task_scheduler=scheduler,
+            ),
+            sop_belief_service=SopBeliefService(cast(Any, repositories.sop_beliefs)),
+            graph_timeout_seconds=0.05,
+        )
+        events = [
+            event
+            async for event in service.stream(
+                task=task,
+                accessible_knowledge_base_ids=("kb_user-a",),
+            )
+        ]
+        persisted = await repositories.diagnostics.get_task(
+            owner_user_id="user-a",
+            task_id=task.id,
+        )
+        assert persisted is not None
+        assert persisted.status == "timed_out"
+        assert persisted.result_payload is not None
+        assert persisted.result_payload["reportGeneration"] == "fallback"
+        reports = await repositories.diagnostics.list_reports(
+            owner_user_id="user-a",
+            task_id=task.id,
+        )
+        assert len(reports) == 1
+        assert "诊断执行超过时限" in reports[0].content
+        assert "已收集证据" in reports[0].content
+        status_events = [
+            event
+            for event in events
+            if event.get("type") == "task.status"
+            and cast(dict[str, object], event.get("task") or {}).get("status") == "timed_out"
+        ]
+        assert len(status_events) == 1
+        complete_events = [event for event in events if event.get("type") == "complete"]
+        assert len(complete_events) == 1
+        complete_result = cast(dict[str, object], complete_events[0]["result"])
+        complete_task = cast(dict[str, object], complete_result["task"])
+        assert complete_task["status"] == "timed_out"
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

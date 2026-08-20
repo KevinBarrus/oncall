@@ -44,8 +44,11 @@
 ## 问题7的解决方案：AIOps 整图 wall-clock 超时（P1，建议优先）
 
 - 现状：`diagnostics.py` 图运行处无整体超时，LLM 卡住（模型 overload、网络抖动）会长期占用后台任务槽位。
-- 方案：为整个 LangGraph 图执行加 `asyncio.timeout(600)`（10 分钟）；超时时生成降级报告"诊断超时，已收集的证据：..."，任务标记 `timed_out`，SSE 发送 `timeout` 事件。
+- 方案：为整个 LangGraph 图执行加 `asyncio.timeout(600)`（10 分钟）；超时时生成降级报告“诊断超时，已收集的证据：...”，任务标记 `timed_out`，SSE 发送 `timeout` 事件。
 - 验证：注入慢 LLM 桩（sleep 超过超时），断言任务进入 timed_out 且报告含已收集证据。
+- 已完成：`AiopsDiagnosticService` 增加 `graph_timeout_seconds`（默认 600），图执行改为 deadline + `wait_for(__anext__)` 循环（Python 3.10 兼容），超时取消图并 `aclose()`。
+- 已完成：`_handle_graph_timeout` 从 owner 作用域仓库读取已收集证据，持久化 `timed_out` 任务与 `_timeout_report_content` 降级报告，SSE 以 `report` → `task.status`（`timed_out`）→ `complete` 结束流；共享契约 `TaskStatusSseEvent.status` 增加 `timed_out`。
+- 已补充超时测试：慢 Planner 桩 + 短超时，断言任务状态、降级报告含已收集证据、SSE 事件序列。
 
 ## 问题8的解决方案：BM25 缓存主动失效（P2 可选）
 

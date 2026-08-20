@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [add-aiops-graph-timeout](/changes/active/add-aiops-graph-timeout/)
 - [clarify-single-user-tenant](/changes/active/clarify-single-user-tenant/)
 - [replace-fragile-json-extraction](/changes/active/replace-fragile-json-extraction/)
 - [align-replanner-capability](/changes/active/align-replanner-capability/)

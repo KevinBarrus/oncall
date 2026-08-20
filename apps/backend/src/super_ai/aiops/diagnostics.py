@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from hashlib import sha256
 from operator import add
@@ -24,6 +25,7 @@ from super_ai.llm.json_output import extract_json_object
 from super_ai.mcp_client import LocalMcpClient, McpClientError
 from super_ai.mcp_connections import McpConnectionService
 from super_ai.memory.repositories import (
+    DiagnosticEvidenceRecord,
     DiagnosticReportRecord,
     DiagnosticStepRecord,
     DiagnosticTaskRecord,
@@ -89,6 +91,7 @@ class AiopsDiagnosticService:
         cls_topic_id: str,
         case_persistor: DiagnosisCasePersistor | None = None,
         sop_belief_service: SopBeliefService | None = None,
+        graph_timeout_seconds: float = 600,
     ) -> None:
         self._repositories = repositories
         self._llm_provider = llm_provider
@@ -101,6 +104,7 @@ class AiopsDiagnosticService:
         self._cls_topic_id = cls_topic_id
         self._case_persistor = case_persistor
         self._sop_belief_service = sop_belief_service
+        self._graph_timeout_seconds = graph_timeout_seconds
 
     async def stream(
         self,
@@ -143,8 +147,20 @@ class AiopsDiagnosticService:
             "evidence": [],
             "evidence_ids": initial_evidence_ids,
         }
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._graph_timeout_seconds
+        update_stream = self._astream_updates(graph, initial_state)
         try:
-            async for update in graph.astream(initial_state, stream_mode="updates"):
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                try:
+                    update = await asyncio.wait_for(
+                        update_stream.__anext__(), timeout=remaining
+                    )
+                except StopAsyncIteration:
+                    break
                 for node_update in cast(Mapping[str, object], update).values():
                     if not isinstance(node_update, Mapping):
                         continue
@@ -154,7 +170,17 @@ class AiopsDiagnosticService:
                     for event in events:
                         if isinstance(event, dict):
                             yield cast(dict[str, object], event)
+        except asyncio.TimeoutError:
+            await update_stream.aclose()
+            async for event in self._handle_graph_timeout(
+                task=task,
+                started_at=started_at,
+                alert=alert,
+            ):
+                yield event
+            return
         except Exception as exc:
+            await update_stream.aclose()
             await self._repositories.diagnostics.update_task(
                 owner_user_id=task.owner_user_id,
                 task_id=task.id,
@@ -179,6 +205,97 @@ class AiopsDiagnosticService:
             diagnosticTaskId=task.id,
             durationMs=elapsed_ms(started_at),
         )
+
+    async def _astream_updates(
+        self,
+        graph: Any,
+        initial_state: AiopsDiagnosticState,
+    ) -> AsyncGenerator[Mapping[str, object], None]:
+        """Yield graph updates so the caller can apply a wall-clock timeout."""
+        async for update in graph.astream(initial_state, stream_mode="updates"):
+            yield cast(Mapping[str, object], update)
+
+    async def _handle_graph_timeout(
+        self,
+        *,
+        task: DiagnosticTaskRecord,
+        started_at: float,
+        alert: JsonDict,
+    ) -> AsyncIterator[dict[str, object]]:
+        """Persist a timed-out task with a degraded report of collected evidence."""
+        owner_user_id = task.owner_user_id
+        evidence_records = await self._repositories.diagnostics.list_evidence(
+            owner_user_id=owner_user_id,
+            task_id=task.id,
+        )
+        content = _timeout_report_content(alert=alert, evidence=evidence_records)
+        report = await self._repositories.diagnostics.add_report(
+            owner_user_id=owner_user_id,
+            report_id=f"report_{uuid4().hex}",
+            task_id=task.id,
+            title=AIOPS_REPORT_TITLE,
+            content=content,
+            payload={
+                "status": "timed_out",
+                "reportGeneration": "fallback",
+                "evidenceIds": [record.id for record in evidence_records],
+            },
+        )
+        for evidence_record in evidence_records:
+            await self._repositories.diagnostics.link_report_evidence(
+                owner_user_id=owner_user_id,
+                link_id=f"report_evidence_{uuid4().hex}",
+                task_id=task.id,
+                report_id=report.id,
+                evidence_id=evidence_record.id,
+            )
+        result_payload: JsonDict = {
+            "status": "timed_out",
+            "reportId": report.id,
+            "reportGeneration": "fallback",
+            "evidenceIds": [record.id for record in evidence_records],
+        }
+        updated_task = await self._repositories.diagnostics.update_task(
+            owner_user_id=owner_user_id,
+            task_id=task.id,
+            status="timed_out",
+            result_payload=result_payload,
+            completed_at=_now(),
+        )
+        emit_event(
+            logger,
+            "agent.aiops.timed_out",
+            diagnosticTaskId=task.id,
+            durationMs=elapsed_ms(started_at),
+            evidenceCount=len(evidence_records),
+        )
+        yield _sse_event(
+            "report",
+            {
+                "report": {
+                    "id": report.id,
+                    "title": report.title,
+                    "content": report.content,
+                    "format": "markdown",
+                }
+            },
+        )
+        yield _task_status_event(
+            task.id,
+            "timed_out",
+            "诊断超时，已生成含已收集证据的降级报告。",
+            100,
+        )
+        if updated_task is not None:
+            yield _sse_event(
+                "complete",
+                {
+                    "result": {
+                        "task": _task_payload(updated_task),
+                        "report": _report_payload(report),
+                    }
+                },
+            )
 
     async def _mcp_client_for(self, owner_user_id: str) -> LocalMcpClient:
         if self._mcp_client_provider is not None:
@@ -1204,7 +1321,7 @@ def _tool_event(
 
 def _task_status_event(
     task_id: str,
-    status: Literal["running", "succeeded", "failed"],
+    status: Literal["running", "succeeded", "failed", "timed_out"],
     message: str,
     progress: int,
 ) -> dict[str, object]:
@@ -1362,6 +1479,38 @@ def _clean_markdown_report(content: str) -> str | None:
     if not all(heading in report for heading in AIOPS_REPORT_REQUIRED_HEADINGS):
         return None
     return report
+
+
+def _timeout_report_content(
+    *,
+    alert: JsonDict,
+    evidence: Sequence[DiagnosticEvidenceRecord],
+) -> str:
+    """Build a degraded Markdown report when the graph exceeds its wall-clock budget."""
+    alert_name = _report_value(alert, "alertName", "name")
+    severity = _report_value(alert, "severity", "level")
+    service = _report_value(alert, "service", "target")
+    evidence_lines = "\n".join(_timeout_evidence_line(record) for record in evidence)
+    if not evidence_lines:
+        evidence_lines = "- 未收集到工具证据。"
+    return (
+        "# 告警分析报告\n\n"
+        f"## 📋 活跃告警清单\n\n"
+        f"- 告警：{alert_name}（{severity}），涉及服务：{service}\n\n"
+        "## 📊 结论\n\n"
+        "诊断执行超过时限被中断，以下为已收集的证据，未能生成完整结论。\n\n"
+        "## 🔍 已收集证据\n\n"
+        f"{evidence_lines}\n\n"
+        "## 建议\n\n"
+        "1. 检查数据源与模型服务可用性后重新发起诊断。\n"
+    )
+
+
+def _timeout_evidence_line(record: DiagnosticEvidenceRecord) -> str:
+    summary = str(record.summary).replace("\n", " ").strip()
+    if len(summary) > 120:
+        summary = f"{summary[:120]}..."
+    return f"- [{record.kind}] {record.source}: {summary or record.id}"
 
 
 def _fallback_report_content(
