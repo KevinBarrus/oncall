@@ -1,10 +1,12 @@
-"""CAG (Cache-Augmented Generation) runner for oncall RAG evaluation.
+"""CAG (Cache-Augmented Generation) 独立研究基线（非生产依赖）。
 
-Deploys Qwen2.5-1.5B-Instruct locally with 4-bit quantization (bitsandbytes NF4).
-Precomputes KV Cache from all knowledge documents and reuses it for each question.
+仅供多策略 RAG 评测的 ``cag-kvcache`` 策略使用。依赖 torch / transformers /
+bistandsbytes 等重 ML 库，这些依赖在可选的 ``eval`` dependency group，
+不在运行时依赖中；运行前需安装：
 
-Core idea: encode all KB docs once → cache attention states → reuse for every query.
-No retrieval step — the entire knowledge base is "preloaded" in the KV Cache.
+    uv sync --group eval
+
+部署 Qwen2.5-1.5B-Instruct 并预计算全部知识文档的 KV Cache，逐问复用。
 
 Usage:
     from tests.cag_runner import ensure_model, prepare_cache, answer_question, get_knowledge_text

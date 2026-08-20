@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "isolate-cag-eval-baseline", link: "/changes/active/isolate-cag-eval-baseline/" },
   { text: "improve-judge-statistics", link: "/changes/active/improve-judge-statistics/" },
   { text: "maintain-rag-relevance-labels", link: "/changes/active/maintain-rag-relevance-labels/" },
   { text: "rename-rag-evaluation", link: "/changes/active/rename-rag-evaluation/" },

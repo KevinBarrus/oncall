@@ -93,6 +93,9 @@
 
 - 将 `cag_runner.py` 标记为独立实验入口，ML 依赖移至可选 eval dependency group。
 - 固化已验证的实验环境或容器，不让生产服务依赖 Transformers 内部 API。
+- 已完成：`cag_runner.py` 标记为独立实验入口（docstring 注明需 `uv sync --group eval`）。
+- 已完成：torch、transformers、bitsandbytes、accelerate 移出运行时依赖，放入可选 `eval` dependency group；默认 `uv sync` 不再安装，已验证默认环境无 torch。
+- 已完成：评测 workflow 的 RAG job 改用 `uv sync --group eval` 安装 CAG 依赖；CI 主门禁仍用默认 `uv sync`。
 
 ## 问题12的解决方案：配置 SQLite 并发与完整性
 

@@ -19,9 +19,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Sync dependencies
+      - name: Sync dependencies (with CAG eval group)
         working-directory: apps/backend
-        run: uv sync
+        run: uv sync --group eval
       - name: Start Milvus infrastructure
         run: docker compose -f infra/compose.yaml up -d --wait milvus
       - name: Run evaluation
