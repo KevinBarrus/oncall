@@ -147,6 +147,9 @@
 
 - 现状：Prompt/Skill 持久化时未预检组装后长度，用户可能在首次对话才遇到上下文超限。
 - 方案（可选）：`POST /chat/prompts`、`POST /chat/skills` 估算 base + prompt + skills 的 token 数，超过 `context_window * 0.3` 时拒绝并提示。
+- 已完成：新增 `estimate_system_prompt_tokens`（base + 用户提示词 + 全部 Skill 完整内容的最坏情况估算，与运行时 `count_tokens` 同入口）。
+- 已完成：预算 = `min(窗口×30%, 30000)`——项目模板窗口为 100 万，纯 30% 分数形同虚设，绝对上限保证约束真实；三个持久化端点（POST/PUT /chat/prompts、POST /chat/skills）接入预检，超限返回 `VALIDATION_INVALID_ARGUMENT` 并提示精简。
+- 已补充测试：两个接近 64KB 的中文 Skill 累积超预算被拒、正常 Prompt 接受。
 
 ## 问题20的解决方案：索引失败原因结构化（已满足，无需修复）
 

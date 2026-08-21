@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [precheck-system-prompt-budget](/changes/active/precheck-system-prompt-budget/)
 - [assert-tenant-scope-boundaries](/changes/active/assert-tenant-scope-boundaries/)
 - [test-alembic-downgrade-paths](/changes/active/test-alembic-downgrade-paths/)
 - [sync-error-catalog-contracts](/changes/active/sync-error-catalog-contracts/)

@@ -10,6 +10,9 @@ from typing import cast
 
 import yaml
 
+from super_ai.chat.memory import count_tokens
+from super_ai.llm import LlmProvider
+
 DEFAULT_CHAT_PROMPT_LABEL = "默认系统提示词"
 DEFAULT_CHAT_PROMPT_CONTENT = (
     "你是一个可靠的中文 AI 助手。除非专业术语需要英文，否则使用简体中文清晰回答。"
@@ -18,6 +21,8 @@ MAX_CHAT_PROMPT_CONTENT_LENGTH = 12000
 MAX_CHAT_SKILL_BYTES = 65536
 MAX_CHAT_SKILL_NAME_LENGTH = 64
 MAX_CHAT_SKILL_DESCRIPTION_LENGTH = 1024
+SYSTEM_PROMPT_TOKEN_BUDGET_FRACTION = 0.3
+MAX_SYSTEM_PROMPT_TOKENS = 30000
 _SKILL_FRONTMATTER_PATTERN = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)", re.DOTALL)
 
 MANDATORY_CHAT_SYSTEM_PROMPT = (
@@ -86,6 +91,23 @@ def validate_chat_prompt_content(label: str, content: str) -> tuple[str, str]:
     if len(normalized_label) > 160 or len(normalized_content) > MAX_CHAT_PROMPT_CONTENT_LENGTH:
         raise ValueError("系统提示词名称不能超过 160 字符，内容不能超过 12000 字符。")
     return normalized_label, normalized_content
+
+
+def estimate_system_prompt_tokens(
+    *,
+    prompt_content: str,
+    skill_contents: Sequence[str],
+    llm_provider: LlmProvider,
+) -> int:
+    """Estimate the worst-case system prompt size (base + prompt + all Skill bodies).
+
+    Skill 采用渐进式披露，但 `load_skill` 会注入完整指令，因此按全部 Skill
+    已加载的最坏情况估算，避免首次对话才遇到上下文超限。
+    """
+    sections = [MANDATORY_CHAT_SYSTEM_PROMPT, prompt_content.strip()]
+    sections.extend(skill_contents)
+    text = "\n\n".join(section for section in sections if section.strip())
+    return count_tokens(text, llm_provider=llm_provider)
 
 
 def validate_skill_upload(filename: str | None, content: bytes) -> ValidatedChatSkill:

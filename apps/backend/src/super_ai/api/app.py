@@ -49,6 +49,9 @@ from super_ai.chat import (
 from super_ai.chat.configuration import (
     DEFAULT_CHAT_PROMPT_CONTENT,
     DEFAULT_CHAT_PROMPT_LABEL,
+    MAX_SYSTEM_PROMPT_TOKENS,
+    SYSTEM_PROMPT_TOKEN_BUDGET_FRACTION,
+    estimate_system_prompt_tokens,
     validate_chat_prompt_content,
     validate_skill_upload,
 )
@@ -983,6 +986,12 @@ def create_app(
             label, content = validate_chat_prompt_content(body.label, body.content)
         except ValueError as exc:
             raise ApiErrorException("VALIDATION_INVALID_ARGUMENT", str(exc)) from exc
+        await _assert_system_prompt_within_budget(
+            request,
+            owner_user_id=user.id,
+            prompt_content=content,
+            extra_skill_content=None,
+        )
         prompt = await _chat_prompt_repository(request).create(
             owner_user_id=user.id,
             prompt_id=f"prompt_{uuid4().hex}",
@@ -1002,6 +1011,12 @@ def create_app(
             label, content = validate_chat_prompt_content(body.label, body.content)
         except ValueError as exc:
             raise ApiErrorException("VALIDATION_INVALID_ARGUMENT", str(exc)) from exc
+        await _assert_system_prompt_within_budget(
+            request,
+            owner_user_id=user.id,
+            prompt_content=content,
+            extra_skill_content=None,
+        )
         prompt = await _chat_prompt_repository(request).update(
             owner_user_id=user.id,
             prompt_id=prompt_id,
@@ -1051,6 +1066,15 @@ def create_app(
         content = await file.read()
         try:
             validated = validate_skill_upload(file.filename, content)
+        except ValueError as exc:
+            raise ApiErrorException("VALIDATION_INVALID_ARGUMENT", str(exc)) from exc
+        await _assert_system_prompt_within_budget(
+            request,
+            owner_user_id=user.id,
+            prompt_content=None,
+            extra_skill_content=validated.content,
+        )
+        try:
             skill = await _chat_skill_repository(request).create(
                 owner_user_id=user.id,
                 skill_id=f"skill_{uuid4().hex}",
@@ -2619,6 +2643,57 @@ def _chat_configuration_repository(request: Request) -> UserChatConfigurationRep
     if repository is None:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR")
     return repository
+
+
+async def _assert_system_prompt_within_budget(
+    request: Request,
+    *,
+    owner_user_id: str,
+    prompt_content: str | None,
+    extra_skill_content: str | None,
+) -> None:
+    """Reject prompt/Skill edits that would exceed the system prompt token budget.
+
+    按最坏情况估算（base + 用户提示词 + 全部 Skill 已加载的完整内容），
+    超过上下文窗口的 ``SYSTEM_PROMPT_TOKEN_BUDGET_FRACTION`` 时拒绝，
+    避免首次对话才暴露上下文超限。
+    """
+    skills = await _chat_skill_repository(request).list(owner_user_id=owner_user_id)
+    skill_contents = [skill.content for skill in skills]
+    if extra_skill_content is not None:
+        skill_contents.append(extra_skill_content)
+    if prompt_content is None:
+        default_prompt = await _chat_prompt_repository(request).ensure_default(
+            owner_user_id=owner_user_id,
+            label=DEFAULT_CHAT_PROMPT_LABEL,
+            content=DEFAULT_CHAT_PROMPT_CONTENT,
+        )
+        configuration = await _chat_configuration_repository(request).get_or_create(
+            owner_user_id=owner_user_id,
+            system_prompt_id=default_prompt.id,
+            skill_ids=[],
+        )
+        prompt = await _chat_prompt_repository(request).get(
+            owner_user_id=owner_user_id,
+            prompt_id=configuration.system_prompt_id,
+        )
+        prompt_content = prompt.content if prompt is not None else DEFAULT_CHAT_PROMPT_CONTENT
+    window = _context_window_tokens(request)
+    estimated = estimate_system_prompt_tokens(
+        prompt_content=prompt_content,
+        skill_contents=skill_contents,
+        llm_provider=_llm_provider(request),
+    )
+    budget = min(
+        int(window * SYSTEM_PROMPT_TOKEN_BUDGET_FRACTION),
+        MAX_SYSTEM_PROMPT_TOKENS,
+    )
+    if estimated > budget:
+        raise ApiErrorException(
+            "VALIDATION_INVALID_ARGUMENT",
+            f"系统提示词（含全部 Skill 内容）预计 {estimated} tokens，超过上下文窗口的 "
+            f"{SYSTEM_PROMPT_TOKEN_BUDGET_FRACTION:.0%} 预算（{budget}），请精简提示词或 Skill。",
+        )
 
 
 def _chat_prompt_repository(request: Request) -> UserChatPromptRepository:

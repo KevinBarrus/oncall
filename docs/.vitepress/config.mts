@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "precheck-system-prompt-budget", link: "/changes/active/precheck-system-prompt-budget/" },
   { text: "assert-tenant-scope-boundaries", link: "/changes/active/assert-tenant-scope-boundaries/" },
   { text: "test-alembic-downgrade-paths", link: "/changes/active/test-alembic-downgrade-paths/" },
   { text: "sync-error-catalog-contracts", link: "/changes/active/sync-error-catalog-contracts/" },

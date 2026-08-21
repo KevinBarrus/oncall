@@ -438,8 +438,15 @@ async def test_chat_configuration_is_validated_and_isolated_by_owner(
         invalid_skill = await client.post(
             "/chat/skills",
             headers=headers_a,
-            files={"file": ("Custom.md", b"# Invalid", "text/markdown")},
+            files={
+                "file": (
+                    "SKILL.md",
+                    b"not a valid skill",
+                    "text/markdown",
+                )
+            },
         )
+        assert invalid_skill.status_code == 400
         skill_id = uploaded_skill.json()["data"]["id"]
         updated = await client.put(
             "/chat/configuration",
@@ -500,6 +507,55 @@ async def test_chat_configuration_is_validated_and_isolated_by_owner(
     assert deleted_prompt.status_code == 200
     assert after_prompt_delete.json()["data"]["selection"]["systemPromptId"] != prompt_id
     assert persisted_b.json()["data"]["selection"] == default_b.json()["data"]["selection"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_and_skill_uploads_reject_excessive_system_prompt_budget(
+    migrated_database_url: str,
+) -> None:
+    runner = FakeChatAgentRunner(events=[ChatAgentContentDelta("收到。")])
+    app = create_app(database_url=migrated_database_url, chat_agent_runner=runner)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        user = await _register(client, "budget-owner@example.com", "Budget Owner")
+        headers = _auth_headers(user["accessToken"])
+
+        # 12000 字符上限内的较大 prompt 应被接受（预算检查不误伤正常输入）
+        large_prompt = "很长的提示词内容。" * 1000
+        accepted = await client.post(
+            "/chat/prompts",
+            headers=headers,
+            json={"label": "较大提示词", "content": large_prompt},
+        )
+        assert accepted.status_code == 201
+
+        # 两个接近 64KB 的中文 Skill 累积后超过系统提示词预算上限
+        first_skill = (
+            b"---\nname: first-skill\n"
+            b"description: A large first skill body.\n"
+            b"---\n\n"
+            + "中文内容示例。".encode() * 2700
+        )
+        first = await client.post(
+            "/chat/skills",
+            headers=headers,
+            files={"file": ("SKILL.md", first_skill, "text/markdown")},
+        )
+        assert first.status_code == 201
+
+        second_skill = (
+            b"---\nname: second-skill\n"
+            b"description: A large second skill body.\n"
+            b"---\n\n"
+            + "中文内容示例。".encode() * 2700
+        )
+        rejected_skill = await client.post(
+            "/chat/skills",
+            headers=headers,
+            files={"file": ("SKILL.md", second_skill, "text/markdown")},
+        )
+        assert rejected_skill.status_code == 400
+        assert "预算" in rejected_skill.json()["error"]["message"]
 
 
 @pytest.mark.asyncio
