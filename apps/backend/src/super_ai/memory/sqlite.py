@@ -178,7 +178,10 @@ class SQLiteChatMemoryRepository:
         compacted_message_count: int | None = None,
         context_tokens: int | None = None,
         last_compacted_at: datetime | None = None,
+        last_compaction_error: str | None = None,
+        last_compaction_failed_at: datetime | None = None,
         clear_compaction: bool = False,
+        clear_compaction_error: bool = False,
         updated_at: datetime | None = None,
     ) -> ChatSessionRecord | None:
         timestamp = updated_at or utc_now()
@@ -202,6 +205,13 @@ class SQLiteChatMemoryRepository:
                     row.context_tokens = context_tokens
                 if last_compacted_at is not None:
                     row.last_compacted_at = last_compacted_at
+            if last_compaction_error is not None:
+                row.last_compaction_error = last_compaction_error
+            if last_compaction_failed_at is not None:
+                row.last_compaction_failed_at = last_compaction_failed_at
+            if clear_compaction_error:
+                row.last_compaction_error = None
+                row.last_compaction_failed_at = None
             row.updated_at = timestamp
             await session.commit()
         return _chat_session_record(row)
@@ -423,6 +433,7 @@ class SQLiteChatMemoryRepository:
         memory_summary: str,
         context_tokens: int,
         last_compacted_at: datetime,
+        clear_compaction_error: bool = False,
     ) -> ChatSessionRecord | None:
         if message_count <= 0:
             raise ValueError("message_count must be positive")
@@ -472,6 +483,9 @@ class SQLiteChatMemoryRepository:
             parent.compacted_message_count = 0
             parent.context_tokens = context_tokens
             parent.last_compacted_at = last_compacted_at
+            if clear_compaction_error:
+                parent.last_compaction_error = None
+                parent.last_compaction_failed_at = None
             parent.updated_at = timestamp
         return _chat_session_record(parent)
 
@@ -2292,6 +2306,12 @@ def _chat_session_record(row: ChatSessionModel) -> ChatSessionRecord:
         context_tokens=row.context_tokens,
         last_compacted_at=(
             _ensure_utc(row.last_compacted_at) if row.last_compacted_at is not None else None
+        ),
+        last_compaction_error=row.last_compaction_error,
+        last_compaction_failed_at=(
+            _ensure_utc(row.last_compaction_failed_at)
+            if row.last_compaction_failed_at is not None
+            else None
         ),
     )
 

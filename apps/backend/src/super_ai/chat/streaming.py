@@ -758,6 +758,8 @@ def _wrap_tool_output_compression(
                 return result
             mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
             metadata = tool_output_compression_metadata(result, compressed, mode=mode)
+            if mode == "sampled_fallback":
+                metadata["compressionFailed"] = True
             if evidence_repository is not None:
                 evidence = await evidence_repository.create(
                     owner_user_id=request.owner_user_id,

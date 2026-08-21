@@ -32,6 +32,8 @@ class ChatSessionRecord:
     compacted_message_count: int = 0
     context_tokens: int = 0
     last_compacted_at: datetime | None = None
+    last_compaction_error: str | None = None
+    last_compaction_failed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,7 +435,10 @@ class ChatMemoryRepository(Protocol):
         compacted_message_count: int | None = None,
         context_tokens: int | None = None,
         last_compacted_at: datetime | None = None,
+        last_compaction_error: str | None = None,
+        last_compaction_failed_at: datetime | None = None,
         clear_compaction: bool = False,
+        clear_compaction_error: bool = False,
         updated_at: datetime | None = None,
     ) -> ChatSessionRecord | None:
         """Update owner-scoped memory policy and compaction state."""
@@ -519,6 +524,7 @@ class ChatMemoryRepository(Protocol):
         memory_summary: str,
         context_tokens: int,
         last_compacted_at: datetime,
+        clear_compaction_error: bool = False,
     ) -> ChatSessionRecord | None:
         """Atomically archive a compacted prefix and update its memory state."""
         ...

@@ -24,6 +24,10 @@
 
 - 现状：压缩失败已发出结构化日志事件（`chat.compaction.failed`、`chat.tool_compression.fallback`），但未持久化到可查询表。
 - 方案（可选）：`chat_sessions` 增加 `last_compaction_error`/`last_compaction_failed_at` 字段，失败时更新并在会话 memory API 返回；工具压缩失败在审计记录加 `compression_failed` 标记。
+- 已完成：Alembic 迁移 `202608210001` 为 `chat_sessions` 增加 `last_compaction_error`/`last_compaction_failed_at`；硬限压缩失败时记录 error 与时间，成功压缩（archive）后清除。
+- 已完成：session memory payload（`ChatMemoryState`）新增 `lastCompactionError`/`lastCompactionFailedAt`，前端契约与 mock 同步。
+- 已完成：工具压缩降级（`sampled_fallback`）在 `_compression` metadata 增加 `compressionFailed` 标记，随审计 result_summary 持久化。
+- 已补充测试：硬限压缩失败记录 error、成功压缩清除 error。
 
 ## 问题4的解决方案：审计失败可观测（P2 可选）
 

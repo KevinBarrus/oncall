@@ -23,6 +23,8 @@ export interface ChatMemoryState {
   readonly contextUsagePercent: number;
   readonly compactedMessageCount: number;
   readonly lastCompactedAt: string | null;
+  readonly lastCompactionError: string | null;
+  readonly lastCompactionFailedAt: string | null;
   readonly canCompact: boolean;
 }
 

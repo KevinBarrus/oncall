@@ -163,6 +163,12 @@ class ChatMemoryService:
                     timeout_seconds=MEMORY_COMPACTION_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
+                await self._repositories.chat.update_memory_state(
+                    owner_user_id=owner_user_id,
+                    session_id=current.id,
+                    last_compaction_error=exc.__class__.__name__,
+                    last_compaction_failed_at=datetime.now(timezone.utc),
+                )
                 emit_event(
                     logger,
                     "chat.memory.compaction_failed",
@@ -340,6 +346,7 @@ class ChatMemoryService:
             context_tokens=tokens,
             last_compacted_at=datetime.now(timezone.utc),
             message_count=session.compacted_message_count + len(messages),
+            clear_compaction_error=True,
         )
         return updated or session
 
@@ -551,6 +558,12 @@ def memory_payload(session: ChatSessionRecord, context_window_tokens: int) -> di
         "compactedMessageCount": session.compacted_message_count,
         "lastCompactedAt": (
             session.last_compacted_at.isoformat() if session.last_compacted_at is not None else None
+        ),
+        "lastCompactionError": session.last_compaction_error,
+        "lastCompactionFailedAt": (
+            session.last_compaction_failed_at.isoformat()
+            if session.last_compaction_failed_at is not None
+            else None
         ),
         "canCompact": session.context_tokens > 0,
     }

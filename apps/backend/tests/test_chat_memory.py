@@ -599,3 +599,98 @@ async def test_hard_limit_rejects_candidate_without_persisting_it(
         await engine.dispose()
 
     assert history == []
+
+
+async def test_hard_limit_compaction_failure_records_error(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-compaction-error"
+        )
+        await repositories.chat.append_message(
+            owner_user_id="user-a",
+            message_id="message-history",
+            session_id=session.id,
+            role="user",
+            content="需要保留的历史内容 " * 30,
+        )
+        service = ChatMemoryService(
+            repositories=repositories,
+            llm_provider=cast(LlmProvider, FailingProvider()),
+            context_window_tokens=20,
+        )
+        history = await repositories.chat.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        with pytest.raises(ChatContextLimitReached):
+            await service.prepare_message(
+                owner_user_id="user-a",
+                session=session,
+                history=history,
+                system_prompt="system prompt with enough context",
+                content="a candidate message that must not be saved",
+            )
+        updated = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert updated is not None
+    assert updated.last_compaction_error == "RuntimeError"
+    assert updated.last_compaction_failed_at is not None
+
+
+async def test_successful_compaction_clears_previous_error(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-compaction-clear"
+        )
+        await repositories.chat.append_message(
+            owner_user_id="user-a",
+            message_id="message-history",
+            session_id=session.id,
+            role="user",
+            content="需要保留的历史内容 " * 30,
+        )
+        await repositories.chat.update_memory_state(
+            owner_user_id="user-a",
+            session_id=session.id,
+            last_compaction_error="TimeoutError",
+            last_compaction_failed_at=datetime.now(timezone.utc),
+        )
+        service = ChatMemoryService(
+            repositories=repositories,
+            llm_provider=cast(LlmProvider, FakeProvider()),
+            context_window_tokens=120,
+        )
+        session = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+        assert session is not None
+        history = await repositories.chat.list_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        assert history
+        await service.compact_once(
+            owner_user_id="user-a",
+            session=session,
+            history=history,
+            system_prompt="你是助手。",
+        )
+        updated = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert updated is not None
+    assert updated.last_compaction_error is None
+    assert updated.last_compaction_failed_at is None

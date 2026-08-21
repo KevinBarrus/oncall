@@ -33,6 +33,8 @@ const sessions: readonly ChatSessionSummary[] = [
       contextUsagePercent: 0.9,
       compactedMessageCount: 0,
       lastCompactedAt: null,
+      lastCompactionError: null,
+      lastCompactionFailedAt: null,
       canCompact: true
     }
   }

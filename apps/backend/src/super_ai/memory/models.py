@@ -290,6 +290,10 @@ class ChatSessionModel(Base):
     last_compacted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_compaction_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    last_compaction_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     execution_lease_token: Mapped[str | None] = mapped_column(String(80), nullable=True)
     execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
