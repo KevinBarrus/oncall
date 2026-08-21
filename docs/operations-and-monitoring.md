@@ -2,6 +2,8 @@
 
 应用只读取本地 `config/project.json` 和可选的 `config/user.project.json`，不读取本机环境变量。两个文件都被 Git 忽略；仓库只保留不含真实凭据的模板。不要为本项目创建 `.env` 文件，也不要提交本地配置。
 
+生产部署（Nginx 反代、SQLite 备份、systemd 托管等）请阅读[生产部署指南](deployment/production.md)。
+
 首次使用时，在仓库根目录执行：
 
 ```bash

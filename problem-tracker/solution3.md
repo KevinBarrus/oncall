@@ -155,6 +155,8 @@
 
 - 现状：`docs/` 只有本地开发文档。
 - 方案：新增 `docs/deployment/production.md`，覆盖 Docker Compose 生产模式、Nginx 反代（SSE `proxy_read_timeout`）、SQLite 备份、监控告警接入、日志收集。
+- 已完成：新增 `docs/deployment/production.md`——部署形态总览（基础设施容器 + uvicorn/systemd 后端 + Nginx 前端）、Nginx 反代与 SSE 长连接关键配置（`proxy_buffering off`、`proxy_read_timeout 3600s`）、SQLite WAL checkpoint + `.backup` 在线备份与恢复、/health /ready /metrics 监控接入、结构化日志收集、密钥与文件权限（0600）、上线检查清单。
+- 已完成：operations-and-monitoring.md 与 README 增加部署文档入口链接。
 
 ## 问题27的解决方案：Skill/Prompt 版本控制（不实施）
 

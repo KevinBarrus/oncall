@@ -107,7 +107,7 @@ cp config/user.project.template.json config/user.project.json
 - `config/user.project.json`：个人模型与 CLS 配置，仅保存在本机并覆盖基础配置。
 - `config/project.template.json`、`config/user.project.template.json`：可安全提交的配置模板。
 
-两个本地配置文件均被 Git 忽略。请阅读[配置与运维教程](docs/operations-and-monitoring.md)填写模型密钥、CLS 凭据与其他本机配置，禁止将真实凭据加入版本控制。
+两个本地配置文件均被 Git 忽略。请阅读[配置与运维教程](docs/operations-and-monitoring.md)填写模型密钥、CLS 凭据与其他本机配置，禁止将真实凭据加入版本控制。生产环境部署建议见[生产部署指南](docs/deployment/production.md)。
 
 ## 本地开发
 

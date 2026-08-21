@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [add-production-deployment-docs](/changes/active/add-production-deployment-docs/)
 - [sanitize-plain-log-output](/changes/active/sanitize-plain-log-output/)
 - [limit-background-job-concurrency](/changes/active/limit-background-job-concurrency/)
 - [add-aiops-graph-timeout](/changes/active/add-aiops-graph-timeout/)

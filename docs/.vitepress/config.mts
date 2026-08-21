@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "add-production-deployment-docs", link: "/changes/active/add-production-deployment-docs/" },
   { text: "sanitize-plain-log-output", link: "/changes/active/sanitize-plain-log-output/" },
   { text: "limit-background-job-concurrency", link: "/changes/active/limit-background-job-concurrency/" },
   { text: "add-aiops-graph-timeout", link: "/changes/active/add-aiops-graph-timeout/" },
