@@ -452,6 +452,31 @@ def test_delete_document_chunks_applies_scope_filter_and_rejects_empty_scope() -
             )
 
 
+def test_tenant_filters_are_mutually_exclusive_between_tenants() -> None:
+    from super_ai.memory.vector_scope import build_milvus_tenant_filter
+
+    tenant_a_filter = build_milvus_tenant_filter(
+        tenant_id="user_a", knowledge_base_ids=["kb_a", "kb_b"]
+    )
+    tenant_b_filter = build_milvus_tenant_filter(
+        tenant_id="user_b", knowledge_base_ids=["kb_a", "kb_b"]
+    )
+
+    assert 'tenantId == "user_a"' in tenant_a_filter
+    assert 'tenantId == "user_b"' in tenant_b_filter
+    assert "user_a" not in tenant_b_filter
+    assert "user_b" not in tenant_a_filter
+    assert 'knowledgeBaseId in ["kb_a","kb_b"]' in tenant_a_filter
+
+
+def test_tenant_filter_escapes_quotes_in_scope_values() -> None:
+    from super_ai.memory.vector_scope import build_milvus_tenant_filter
+
+    escaped = build_milvus_tenant_filter(tenant_id='user"a', knowledge_base_ids=['kb"1'])
+    assert 'tenantId == "user\\"a"' in escaped
+    assert 'knowledgeBaseId in ["kb\\"1"]' in escaped
+
+
 @pytest.mark.asyncio
 async def test_ready_endpoint_reports_milvus_readiness_without_startup_connection(
     tmp_path: Path,

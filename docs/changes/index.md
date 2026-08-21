@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [assert-tenant-scope-boundaries](/changes/active/assert-tenant-scope-boundaries/)
 - [test-alembic-downgrade-paths](/changes/active/test-alembic-downgrade-paths/)
 - [sync-error-catalog-contracts](/changes/active/sync-error-catalog-contracts/)
 - [restrict-sqlite-file-permissions](/changes/active/restrict-sqlite-file-permissions/)
