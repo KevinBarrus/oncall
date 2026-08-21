@@ -202,6 +202,16 @@ class KnowledgeRetrievalTool:
         self._rerank_model = rerank_model
         self._keyword_corpora: dict[tuple[str, tuple[str, ...]], _KeywordCorpusCacheEntry] = {}
 
+    def invalidate_keyword_cache(
+        self,
+        *,
+        owner_user_id: str,
+        knowledge_base_ids: Sequence[str],
+    ) -> None:
+        """Drop the cached BM25 corpus for an owner-scoped knowledge-base set."""
+        cache_key = (owner_user_id, tuple(sorted(knowledge_base_ids)))
+        self._keyword_corpora.pop(cache_key, None)
+
     async def run(
         self,
         input: KnowledgeRetrievalToolInput,

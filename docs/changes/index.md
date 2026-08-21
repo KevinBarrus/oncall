@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [invalidate-bm25-cache-on-delete](/changes/active/invalidate-bm25-cache-on-delete/)
 - [dedupe-cross-turn-evidence](/changes/active/dedupe-cross-turn-evidence/)
 - [track-audit-failures](/changes/active/track-audit-failures/)
 - [persist-compaction-failures](/changes/active/persist-compaction-failures/)

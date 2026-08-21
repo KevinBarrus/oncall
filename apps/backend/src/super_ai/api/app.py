@@ -2183,11 +2183,7 @@ async def _chat_memory_context(
 def _chat_agent_runner(request: Request) -> ChatAgentRunner:
     runner = request.app.state.chat_agent_runner
     if runner is None:
-        retrieval_tool = KnowledgeRetrievalTool(
-            embedding_model=_embedding_model(request),
-            vector_store=cast(RetrievalVectorStore, _vector_store(request)),
-            rerank_model=_rerank_model(request),
-        )
+        retrieval_tool = _retrieval_tool(request)
         runner = LangChainChatAgentRunner(
             llm_provider=_llm_provider(request),
             retrieval_tool=retrieval_tool,
@@ -2197,6 +2193,18 @@ def _chat_agent_runner(request: Request) -> ChatAgentRunner:
         )
         request.app.state.chat_agent_runner = runner
     return cast(ChatAgentRunner, runner)
+
+
+def _retrieval_tool(request: Request) -> KnowledgeRetrievalTool:
+    tool = getattr(request.app.state, "retrieval_tool", None)
+    if tool is None:
+        tool = KnowledgeRetrievalTool(
+            embedding_model=_embedding_model(request),
+            vector_store=cast(RetrievalVectorStore, _vector_store(request)),
+            rerank_model=_rerank_model(request),
+        )
+        request.app.state.retrieval_tool = tool
+    return cast(KnowledgeRetrievalTool, tool)
 
 
 def _mcp_client(request: Request) -> LocalMcpClient:
@@ -2794,3 +2802,10 @@ def _delete_document_vectors(
         raise
     except Exception as exc:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR") from exc
+    try:
+        _retrieval_tool(request).invalidate_keyword_cache(
+            owner_user_id=tenant_id,
+            knowledge_base_ids=[knowledge_base_id],
+        )
+    except Exception:
+        pass  # cache eviction must never break document deletion

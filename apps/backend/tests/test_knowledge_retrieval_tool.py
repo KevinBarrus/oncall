@@ -225,6 +225,42 @@ async def test_keyword_corpus_cache_reuses_scope_and_keeps_scopes_isolated() -> 
 
 
 @pytest.mark.asyncio
+async def test_keyword_cache_invalidates_after_explicit_eviction() -> None:
+    chunk = StoredVectorChunk(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        knowledge_base_id="kb-a",
+        owner_user_id="user-a",
+        tenant_id="user-a",
+        content="database timeout runbook",
+        source="runbook.md",
+        created_at=1,
+        metadata={},
+    )
+    store = FakeRetrievalVectorStore(chunks=[chunk])
+    tool = KnowledgeRetrievalTool(
+        embedding_model=FakeEmbeddingModel(),
+        vector_store=store,
+        rerank_model=FakeRerankModel(),
+    )
+    for _ in range(2):
+        await tool.run(
+            KnowledgeRetrievalToolInput(query="database timeout"),
+            owner_user_id="user-a",
+            accessible_knowledge_base_ids=("kb-a",),
+        )
+    assert len(store.list_calls) == 1
+
+    tool.invalidate_keyword_cache(owner_user_id="user-a", knowledge_base_ids=["kb-a"])
+    await tool.run(
+        KnowledgeRetrievalToolInput(query="database timeout"),
+        owner_user_id="user-a",
+        accessible_knowledge_base_ids=("kb-a",),
+    )
+    assert len(store.list_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_retrieval_tool_filters_hits_by_document_metadata_and_scope() -> None:
     matching_hit = VectorSearchResult(
         chunk_id="chunk_match",

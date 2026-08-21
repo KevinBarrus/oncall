@@ -67,6 +67,10 @@
 
 - 现状：`retrieval/tool.py` 的 `_keyword_corpora` 60s TTL，文档删除后 60s 窗口内可能命中已删除文档。
 - 方案（可选）：文档删除/索引完成时主动失效对应 `(owner_user_id, knowledge_base_ids)` 缓存；或缓存键加入知识库版本号。
+- 已完成：`KnowledgeRetrievalTool` 新增 `invalidate_keyword_cache(owner_user_id, knowledge_base_ids)`，文档删除路径（`_delete_document_vectors`）在向量清理成功后主动失效对应缓存；失效为尽力而为（独立 try/except + 60s TTL 兜底），不破坏删除主操作。
+- 已完成：抽取 `_retrieval_tool` provider 缓存到 `app.state`，与 chat agent runner 共用同一实例，保证失效命中真实缓存。
+- 已补充测试：缓存命中后显式失效，下次检索重建 corpus。
+- 限制：索引完成路径未接入失效（后台任务无检索工具引用），新文档 60s 内不参与 BM25（向量检索即时生效，影响小）；缓存键版本号方案未采用。
 
 ## 问题9的解决方案：评测 mock fixture（P2 可选）
 
