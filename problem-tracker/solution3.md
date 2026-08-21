@@ -106,6 +106,9 @@
 
 - 现状：`errors.ts` 与 `error_catalog.py` 双份手动同步，现有 `api-contracts.test.ts` 只测形状不测跨端一致性。
 - 方案（可选）：新增契约测试断言后端 `/openapi.json` 的错误响应与 `errors.ts` 一致（前端错误码 ⊆ 后端实际错误码）。
+- 已完成：新增 `apps/backend/scripts/sync_error_catalog.py`——以 `error_catalog.py` 为单一事实来源，确定性生成 `packages/api-contracts/src/generated/error-catalog.json`（提交，12 个码）。
+- 已完成：契约测试新增双向一致性断言（前端码与后端码完全相等、每码 category/httpStatus/message 逐字段一致）。
+- 已完成：CI 后端 job 增加“Error catalog sync check”（重新生成 + `git diff --exit-code`），防止生成文件过期。
 
 ## 问题14的解决方案：evidenceId 注入（已实现，无需修复）
 

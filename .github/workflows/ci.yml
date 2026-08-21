@@ -41,6 +41,10 @@ jobs:
         run: uv run ruff check .
       - name: Pyright
         run: uv run pyright
+      - name: Error catalog sync check
+        run: |
+          uv run python scripts/sync_error_catalog.py
+          git diff --exit-code -- ../../packages/api-contracts/src/generated/error-catalog.json
       - name: Pytest (offline regression)
         run: uv run pytest -m "not local_config"
       - name: Evaluation helper tests

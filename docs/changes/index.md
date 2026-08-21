@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [sync-error-catalog-contracts](/changes/active/sync-error-catalog-contracts/)
 - [restrict-sqlite-file-permissions](/changes/active/restrict-sqlite-file-permissions/)
 - [add-evaluation-mock-mode](/changes/active/add-evaluation-mock-mode/)
 - [invalidate-bm25-cache-on-delete](/changes/active/invalidate-bm25-cache-on-delete/)

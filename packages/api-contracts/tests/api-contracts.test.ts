@@ -1,4 +1,22 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
+
+function loadBackendErrorCatalog(): Record<
+  string,
+  { category: string; httpStatus: number; message: string }
+> {
+  const catalogPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../src/generated/error-catalog.json",
+  );
+  return JSON.parse(readFileSync(catalogPath, "utf-8")) as Record<
+    string,
+    { category: string; httpStatus: number; message: string }
+  >;
+}
 
 import {
   API_ERROR_CODES,
@@ -162,6 +180,22 @@ describe("error code catalog", () => {
       httpStatus: 403,
       message: expect.stringContaining("permission")
     });
+  });
+
+  it("matches the backend error catalog in both directions", () => {
+    const backendCatalog = loadBackendErrorCatalog();
+    const frontendCodes = Object.keys(API_ERROR_CODES);
+    const backendCodes = Object.keys(backendCatalog);
+    expect(frontendCodes.sort()).toEqual(backendCodes.sort());
+    for (const code of frontendCodes) {
+      const backend = backendCatalog[code];
+      expect(backend, `backend missing ${code}`).toBeDefined();
+      expect(API_ERROR_CODES[code]).toMatchObject({
+        category: backend.category,
+        httpStatus: backend.httpStatus,
+        message: backend.message
+      });
+    }
   });
 });
 
