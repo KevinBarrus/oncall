@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from time import monotonic
@@ -48,7 +49,7 @@ def configure_structured_logging() -> None:
     handler = logging.StreamHandler()
     handler.set_name(_STRUCTURED_HANDLER_NAME)
     handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setFormatter(SanitizingFormatter("%(message)s"))
     logger.addHandler(handler)
 
 
@@ -98,3 +99,40 @@ def _is_sensitive_key(key: str) -> bool:
     return normalized in _SENSITIVE_KEYS or normalized.endswith(
         ("_key", "_password", "_secret", "_token")
     )
+
+
+_SENSITIVE_VALUE_PATTERN = re.compile(
+    r"(?P<quote_open>[\"']?)"
+    r"(?P<key>[A-Za-z0-9_.-]*?"
+    r"(?i:api[_-]?key|key|secret|password|passwd|credential|authorization|token|"
+    r"(?:access|auth|refresh|bearer|id)[_-]?token|"
+    r"[a-z0-9]+[_-]?(?:key|secret|password|token))"
+    r")\s*[\"']?\s*(?P<sep>[:=])\s*"
+    r"(?P<quote>[\"']?)(?P<value>[^\"'\s,;}]*)(?P=quote)"
+)
+
+
+class SanitizingFormatter(logging.Formatter):
+    """Redact sensitive key-value pairs inside formatted log messages.
+
+    对渲染后的 message（含 ``args`` 展开值）做文本脱敏，避免
+    ``logger.error("config: %s", config)`` 之类的非结构化调用泄漏密钥。
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = record.getMessage()
+        record.msg = _redact_text(rendered)
+        record.args = ()
+        return super().format(record)
+
+
+def _redact_text(text: str) -> str:
+    """Replace sensitive ``key: value`` / ``key=value`` pairs with a redacted value."""
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group("key")
+        sep = match.group("sep")
+        quote = match.group("quote")
+        return f"{match.group('quote_open')}{key}{sep}{quote}***{quote}"
+
+    return _SENSITIVE_VALUE_PATTERN.sub(_replace, text)

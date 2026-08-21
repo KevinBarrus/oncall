@@ -66,8 +66,10 @@
 ## 问题10的解决方案：全局日志脱敏（P1，安全加固）
 
 - 现状：`observability.py` 的 `emit_event` 已用 `_redact` 脱敏（覆盖 `_key`/`_secret`/`_token` 后缀），但 `logger.info/exception` 等直接调用不受保护。
-- 方案：增加全局日志 Formatter/Filter，对 record 中的敏感 key（apiKey/secret/password/token 等）统一替换为 `***`；补充测试"日志输出不含真实密钥"。
+- 方案：增加全局日志 Formatter/Filter，对 record 中的敏感 key（apiKey/secret/password/token 等）统一替换为 `***`；补充测试“日志输出不含真实密钥”。
 - 验证：构造含 apiKey 的异常日志，断言输出被脱敏。
+- 已完成：新增 `SanitizingFormatter`（渲染后 message 脱敏并回填，含 args 展开值），`_redact_text` 正则替换敏感键值对（JSON 与 `=` 风格，保留引号结构）；`configure_structured_logging` 的 handler 改用新 formatter，覆盖所有 super_ai 命名空间日志。
+- 已补充脱敏测试：JSON 键值、args 展开、`=` 风格、普通文本不误伤、集成输出验证。
 
 ## 问题11的解决方案：Skill 上传校验（已实现，无需修复）
 
