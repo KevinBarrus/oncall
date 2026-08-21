@@ -38,6 +38,7 @@ export interface ChatSessionSummary {
   readonly title: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly auditFailureCount: number;
   readonly memory: ChatMemoryState;
 }
 

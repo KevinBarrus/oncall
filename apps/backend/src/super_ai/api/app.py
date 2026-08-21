@@ -2290,6 +2290,7 @@ def _chat_session_payload(
         "title": record.title or "New chat",
         "createdAt": record.created_at.isoformat(),
         "updatedAt": record.updated_at.isoformat(),
+        "auditFailureCount": record.audit_failure_count,
         "memory": memory_payload(record, context_window_tokens),
     }
 

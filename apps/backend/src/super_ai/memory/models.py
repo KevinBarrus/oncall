@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -293,6 +294,9 @@ class ChatSessionModel(Base):
     last_compaction_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     last_compaction_failed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    audit_failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=sa.text("0")
     )
     execution_lease_token: Mapped[str | None] = mapped_column(String(80), nullable=True)
     execution_lease_expires_at: Mapped[datetime | None] = mapped_column(

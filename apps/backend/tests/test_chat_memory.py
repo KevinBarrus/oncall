@@ -26,6 +26,11 @@ from super_ai.chat.memory import (
     maybe_compress_structured_tool_output,
     maybe_compress_tool_output,
 )
+from super_ai.chat.streaming import (
+    ChatAgentRunner,
+    ChatAgentToolCall,
+    ChatStreamingService,
+)
 from super_ai.llm import LlmProvider
 from super_ai.memory.database import create_memory_engine, create_memory_session_factory
 from super_ai.memory.repositories import ChatMessageRecord
@@ -694,3 +699,42 @@ async def test_successful_compaction_clears_previous_error(
     assert updated is not None
     assert updated.last_compaction_error is None
     assert updated.last_compaction_failed_at is None
+
+
+async def test_audit_failure_increments_session_counter(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-audit-failure"
+        )
+
+        async def _boom(**kwargs: object) -> None:
+            raise RuntimeError("audit write failed")
+
+        monkeypatch.setattr(repositories.tool_call_audits, "create_for_chat_session", _boom)
+        service = ChatStreamingService(
+            repositories=repositories,
+            agent_runner=cast(ChatAgentRunner, object()),
+        )
+        await service._persist_tool_call_audit(  # pyright: ignore[reportPrivateUsage]
+            owner_user_id="user-a",
+            session_id=session.id,
+            event=ChatAgentToolCall(
+                id="tool-audit-1",
+                name="SearchLog",
+                status="started",
+                input={},
+            ),
+        )
+        updated = await repositories.chat.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert updated is not None
+    assert updated.audit_failure_count == 1

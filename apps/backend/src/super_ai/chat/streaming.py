@@ -572,6 +572,13 @@ class ChatStreamingService:
                         error_message=error_message,
                     )
         except Exception as exc:
+            try:
+                await self._repositories.chat.increment_audit_failure_count(
+                    owner_user_id=owner_user_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass  # audit bookkeeping must never break the chat flow
             emit_event(
                 logger,
                 "chat.tool_audit.failed",

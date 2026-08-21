@@ -812,6 +812,7 @@ function _chatSession(overrides: Partial<ChatSessionSummary> = {}): ChatSessionS
     title: "Restart API",
     createdAt: "2026-07-09T00:00:00.000Z",
     updatedAt: "2026-07-09T00:00:01.000Z",
+    auditFailureCount: 0,
     memory: {
       mode: "every_30_turns",
       contextTokens: 1200,

@@ -168,6 +168,22 @@ class SQLiteChatMemoryRepository:
             await session.commit()
         return _chat_session_record(row)
 
+    async def increment_audit_failure_count(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+    ) -> ChatSessionRecord | None:
+        timestamp = utc_now()
+        async with self._session_factory() as session:
+            row = await _find_chat_session(session, owner_user_id, session_id)
+            if row is None:
+                return None
+            row.audit_failure_count += 1
+            row.updated_at = timestamp
+            await session.commit()
+        return _chat_session_record(row)
+
     async def update_memory_state(
         self,
         *,
@@ -2313,6 +2329,7 @@ def _chat_session_record(row: ChatSessionModel) -> ChatSessionRecord:
             if row.last_compaction_failed_at is not None
             else None
         ),
+        audit_failure_count=row.audit_failure_count,
     )
 
 

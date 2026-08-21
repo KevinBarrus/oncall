@@ -34,6 +34,7 @@ class ChatSessionRecord:
     last_compacted_at: datetime | None = None
     last_compaction_error: str | None = None
     last_compaction_failed_at: datetime | None = None
+    audit_failure_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +424,15 @@ class ChatMemoryRepository(Protocol):
         updated_at: datetime | None = None,
     ) -> ChatSessionRecord | None:
         """Update a chat session title within the owner scope."""
+        ...
+
+    async def increment_audit_failure_count(
+        self,
+        *,
+        owner_user_id: str,
+        session_id: str,
+    ) -> ChatSessionRecord | None:
+        """Increment the session's tool-audit failure counter within the owner scope."""
         ...
 
     async def update_memory_state(

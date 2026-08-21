@@ -33,6 +33,9 @@
 
 - 现状：`_persist_tool_call_audit` 失败只 emit `chat.tool_audit.failed` 事件，聊天继续。
 - 方案（可选）：assistant 消息 metadata 写 `{"auditFailed": true, "auditError": "<safe_category>"}`，或会话级累积 `audit_failure_count` 并在会话 API 返回。
+- 已完成：采用方案第二条路径——Alembic 迁移 `202608210002` 为 `chat_sessions` 增加 `audit_failure_count`（默认 0），审计持久化失败时递增（owner 作用域），内层 try/except 保证审计记账失败也不破坏聊天流。
+- 已完成：session payload（`ChatSessionSummary`）新增 `auditFailureCount`，前端契约与 mock 同步。
+- 已补充测试：审计持久化失败后会话计数递增。
 
 ## 问题5的解决方案：跨轮证据去重与截断（P2 可选）
 

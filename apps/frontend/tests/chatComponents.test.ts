@@ -26,6 +26,7 @@ const sessions: readonly ChatSessionSummary[] = [
     title: "Restart API",
     createdAt: "2026-07-10T00:00:00.000Z",
     updatedAt: "2026-07-10T00:01:00.000Z",
+    auditFailureCount: 0,
     memory: {
       mode: "every_30_turns",
       contextTokens: 1200,
