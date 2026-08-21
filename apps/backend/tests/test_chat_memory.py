@@ -6,12 +6,13 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from alembic import command
 from alembic.config import Config
 
+from super_ai.chat import streaming as streaming_module
 from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
@@ -738,3 +739,72 @@ async def test_audit_failure_increments_session_counter(
 
     assert updated is not None
     assert updated.audit_failure_count == 1
+
+
+async def test_cross_turn_evidence_dedupes_and_drops_whole_lines(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streaming_module, "_CROSS_TURN_CONTEXT_LIMIT", 200)
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-cross-turn"
+        )
+        audits = cast(Any, repositories.tool_call_audits)
+        for index in range(3):
+            audit = await audits.create_for_chat_session(
+                owner_user_id="user-a",
+                audit_id=f"audit-{index}",
+                chat_session_id=session.id,
+                tool_name="SearchLog",
+                arguments={},
+            )
+            await audits.finalize(
+                owner_user_id="user-a",
+                audit_id=audit.id,
+                status="completed",
+                result_summary="重复证据片段",
+            )
+        long_audit = await audits.create_for_chat_session(
+            owner_user_id="user-a",
+            audit_id="audit-3",
+            chat_session_id=session.id,
+            tool_name="SearchLog",
+            arguments={},
+        )
+        await audits.finalize(
+            owner_user_id="user-a",
+            audit_id=long_audit.id,
+            status="completed",
+            result_summary="x" * 3000,
+        )
+        for index in range(2):
+            await repositories.chat.append_message(
+                owner_user_id="user-a",
+                message_id=f"message-{index}",
+                session_id=session.id,
+                role="assistant",
+                content=f"回答 {index}",
+                metadata={
+                    "citations": [
+                        {"id": "cite-1", "title": "SOP A", "sourceType": "knowledge-base"}
+                    ]
+                },
+            )
+        service = ChatStreamingService(
+            repositories=repositories,
+            agent_runner=cast(ChatAgentRunner, object()),
+        )
+        context = await service._cross_turn_evidence_context(  # pyright: ignore[reportPrivateUsage]
+            owner_user_id="user-a", session_id=session.id
+        )
+    finally:
+        await engine.dispose()
+
+    assert context.count("重复证据片段") == 1
+    assert "audit-1" not in context
+    assert "audit-2" not in context
+    assert "audit-3" not in context
+    assert context.count("cite-1") == 1

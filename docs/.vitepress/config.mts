@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "dedupe-cross-turn-evidence", link: "/changes/active/dedupe-cross-turn-evidence/" },
   { text: "track-audit-failures", link: "/changes/active/track-audit-failures/" },
   { text: "persist-compaction-failures", link: "/changes/active/persist-compaction-failures/" },
   { text: "add-production-deployment-docs", link: "/changes/active/add-production-deployment-docs/" },
