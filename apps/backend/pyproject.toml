@@ -38,6 +38,7 @@ dev = [
   "pyright>=1.1.400",
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
+  "pytest-cov>=5.0.0",
   "ruff>=0.8.0",
 ]
 # CAG 研究基线（tests/cag_runner.py）专属重 ML 依赖，固定版本避免内部 API 漂移
@@ -63,6 +64,13 @@ testpaths = ["tests"]
 markers = [
     "local_config: 依赖本地 config/project.json 的测试，CI 干净环境不运行",
 ]
+
+[tool.coverage.run]
+source = ["super_ai"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
 
 [tool.ruff]
 line-length = 100

@@ -208,3 +208,6 @@
 
 - 现状：无覆盖率报告与阈值。
 - 方案（可选）：CI 增加 `pytest --cov=super_ai --cov-report=term`，设最低阈值（如 70%），低于阈值失败；关键模块（auth、chat、aiops）要求更高。
+- 已完成：dev 组新增 pytest-cov；`[tool.coverage]` 配置 source=super_ai、全局 `fail_under=80`（基线 87%）。
+- 已完成：`scripts/check_coverage.py` 按目录聚合检查关键域阈值——auth 80%、chat 75%、aiops 75%（基线 94/81/83%）。
+- 已完成：CI 增加 Coverage 步骤（`--cov-report=json --cov-fail-under=80` + 域检查脚本）。

@@ -47,6 +47,10 @@ jobs:
           git diff --exit-code -- ../../packages/api-contracts/src/generated/error-catalog.json
       - name: Pytest (offline regression)
         run: uv run pytest -m "not local_config"
+      - name: Coverage (regression + thresholds)
+        run: |
+          uv run pytest -m "not local_config" --cov=super_ai --cov-report=json --cov-report=term --cov-fail-under=80 -q
+          uv run python scripts/check_coverage.py
       - name: Evaluation helper tests
         run: uv run pytest tests/aiops_evaluation.py tests/rag_evaluation.py -q
 

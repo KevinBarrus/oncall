@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "add-coverage-thresholds", link: "/changes/active/add-coverage-thresholds/" },
   { text: "rate-limit-high-cost-endpoints", link: "/changes/active/rate-limit-high-cost-endpoints/" },
   { text: "add-business-metrics", link: "/changes/active/add-business-metrics/" },
   { text: "retry-sse-connect", link: "/changes/active/retry-sse-connect/" },
