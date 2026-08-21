@@ -19,6 +19,7 @@ ERROR_DEFINITIONS = {
     "BUSINESS_NOT_FOUND": ("business", 404, "The requested resource was not found."),
     "VALIDATION_INVALID_ARGUMENT": ("validation", 400, "The request parameters are invalid."),
     "VALIDATION_MISSING_FIELD": ("validation", 422, "A required field is missing."),
+    "RATE_LIMIT_EXCEEDED": ("validation", 429, "请求过于频繁，请稍后再试。"),
     "SYSTEM_INTERNAL_ERROR": ("system", 500, "The system could not complete the request."),
     "SYSTEM_UNAVAILABLE": ("system", 503, "The system is temporarily unavailable."),
 }

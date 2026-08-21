@@ -11,6 +11,7 @@ const ERROR_MESSAGES: Readonly<Record<ApiErrorMessage["code"], string>> = {
   BUSINESS_NOT_FOUND: "未找到请求的数据，它可能已被删除或你没有访问权限。",
   VALIDATION_INVALID_ARGUMENT: "提交的信息不符合要求，请检查后重试。",
   VALIDATION_MISSING_FIELD: "请补全必填信息后再试。",
+  RATE_LIMIT_EXCEEDED: "请求过于频繁，请稍后再试。",
   SYSTEM_INTERNAL_ERROR: "系统暂时无法完成该请求，请稍后重试。",
   SYSTEM_UNAVAILABLE: "服务暂时不可用，请稍后重试。"
 };

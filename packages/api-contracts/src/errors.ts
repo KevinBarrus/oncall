@@ -57,6 +57,11 @@ export const API_ERROR_CODES = {
     httpStatus: 422,
     message: "A required field is missing."
   },
+  RATE_LIMIT_EXCEEDED: {
+    category: "validation",
+    httpStatus: 429,
+    message: "请求过于频繁，请稍后再试。"
+  },
   SYSTEM_INTERNAL_ERROR: {
     category: "system",
     httpStatus: 500,

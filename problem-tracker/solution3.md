@@ -182,6 +182,10 @@
 
 - 现状：无速率限制。
 - 方案（可选）：为高成本端点（chat/stream、aiops/diagnose、documents/upload）加 per-user 限流（如 `10/minute`），超限返回 429。本地单用户场景非阻塞，属产品决策。
+- 已完成：新增 `super_ai/api/rate_limit.py`——进程内 per-user 滑动窗口限流器（线程安全）+ `create_rate_limit_dependency` 依赖工厂（每个端点独立配额）。
+- 已完成：三个高成本端点接入——chat 流 10/min、AIOps 诊断创建 10/min、文档上传 20/min；新增错误码 `RATE_LIMIT_EXCEEDED`（429）并走问题13 的三端同步链路（error_catalog → 生成 JSON → errors.ts → 契约双向测试 → 前端用户错误文案）。
+- 已补充测试：限流器放行/拒绝/窗口过期、AIOps 诊断端点第 11 次请求返回 429。
+- 限制：进程内限流对多实例部署退化为尽力而为（单实例架构，部署文档已说明）；未引入 slowapi/fastapi-limiter（避免 Redis 依赖）。
 
 ## 问题25的解决方案：/ready 优雅降级（不实施）
 

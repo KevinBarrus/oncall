@@ -36,6 +36,7 @@ from super_ai.alerts import (
     build_alertmanager_alert_provider,
 )
 from super_ai.api.dependencies import current_user, memory_repositories
+from super_ai.api.rate_limit import create_rate_limit_dependency
 from super_ai.api.routers import auth as auth_router
 from super_ai.auth.repositories import UserRecord
 from super_ai.auth.service import AuthService
@@ -690,6 +691,9 @@ def create_app(
         file: Annotated[UploadFile, File()],
         overwrite: Annotated[bool, Form()] = False,
         chunking: Annotated[str, Form()] = "",
+        _rate: Annotated[None, Depends(create_rate_limit_dependency(
+            "document_upload", limit=20, window_seconds=60
+        ))] = None,
     ) -> object:
         _ensure_knowledge_base_access(user, knowledge_base_id)
         content = await file.read()
@@ -1307,6 +1311,9 @@ def create_app(
         session_id: str,
         body: StreamChatMessageRequest,
         user: Annotated[UserRecord, Depends(current_user)],
+        _rate: Annotated[None, Depends(create_rate_limit_dependency(
+            "chat_stream", limit=10, window_seconds=60
+        ))] = None,
     ) -> StreamingResponse:
         repositories = memory_repositories(request)
         session = await repositories.chat.get_session(
@@ -1382,6 +1389,9 @@ def create_app(
         request: Request,
         body: CreateAiopsDiagnosticRequest,
         user: Annotated[UserRecord, Depends(current_user)],
+        _rate: Annotated[None, Depends(create_rate_limit_dependency(
+            "aiops_diagnose", limit=10, window_seconds=60
+        ))] = None,
     ) -> object:
         task = await memory_repositories(request).diagnostics.create_task(
             owner_user_id=user.id,

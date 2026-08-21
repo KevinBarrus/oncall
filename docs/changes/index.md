@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [rate-limit-high-cost-endpoints](/changes/active/rate-limit-high-cost-endpoints/)
 - [add-business-metrics](/changes/active/add-business-metrics/)
 - [retry-sse-connect](/changes/active/retry-sse-connect/)
 - [precheck-system-prompt-budget](/changes/active/precheck-system-prompt-budget/)
