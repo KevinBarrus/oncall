@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
@@ -58,11 +58,15 @@ class BackgroundJobRuntime:
         concurrency: int = 2,
         lease_seconds: int = 30,
         poll_seconds: float = 0.2,
+        max_concurrent_per_kind: Mapping[str, int] | None = None,
     ) -> None:
         self._repository = repository
         self._concurrency = max(1, concurrency)
         self._lease_seconds = max(6, lease_seconds)
         self._poll_seconds = max(0.05, poll_seconds)
+        self._max_concurrent_per_kind = dict(max_concurrent_per_kind or {})
+        self._active_by_kind: dict[str, int] = {}
+        self._claim_lock = asyncio.Lock()
         self._handlers: dict[str, JobHandler] = {}
         self._workers: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
@@ -93,20 +97,43 @@ class BackgroundJobRuntime:
     async def _worker_loop(self, index: int) -> None:
         worker_id = f"{self._runtime_id}:{index}"
         while not self._stopping.is_set():
-            now = _utc_now()
-            job = await self._repository.claim_next(
-                worker_id=worker_id,
-                lease_expires_at=now + timedelta(seconds=self._lease_seconds),
-                now=now,
-            )
+            job = await self._claim_available(worker_id)
             if job is None:
                 await asyncio.sleep(self._poll_seconds)
                 continue
             await self._execute(job, worker_id)
 
+    async def _claim_available(self, worker_id: str) -> BackgroundJobRecord | None:
+        """Claim the next job whose kind still has a free concurrency slot."""
+        async with self._claim_lock:
+            now = _utc_now()
+            for kind in self._handlers:
+                if self._kind_at_capacity(kind):
+                    continue
+                job = await self._repository.claim_next(
+                    worker_id=worker_id,
+                    lease_expires_at=now + timedelta(seconds=self._lease_seconds),
+                    now=now,
+                    kind=kind,
+                )
+                if job is not None:
+                    self._active_by_kind[kind] = self._active_by_kind.get(kind, 0) + 1
+                    return job
+        return None
+
+    def _kind_at_capacity(self, kind: str) -> bool:
+        limit = self._max_concurrent_per_kind.get(kind)
+        if limit is None or limit <= 0:
+            return False
+        return self._active_by_kind.get(kind, 0) >= limit
+
+    def _release_slot(self, kind: str) -> None:
+        self._active_by_kind[kind] = max(0, self._active_by_kind.get(kind, 0) - 1)
+
     async def _execute(self, job: BackgroundJobRecord, worker_id: str) -> None:
         handler = self._handlers.get(job.kind)
         if handler is None:
+            self._release_slot(job.kind)
             await self._repository.handle_failure(
                 job_id=job.id,
                 worker_id=worker_id,
@@ -147,6 +174,7 @@ class BackgroundJobRuntime:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
+            self._release_slot(job.kind)
 
     async def _heartbeat(self, job_id: str, worker_id: str) -> None:
         interval = self._lease_seconds / 3

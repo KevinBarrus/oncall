@@ -1161,6 +1161,7 @@ class BackgroundJobRepository(Protocol):
         worker_id: str,
         lease_expires_at: datetime,
         now: datetime | None = None,
+        kind: str | None = None,
     ) -> BackgroundJobRecord | None: ...
 
     async def renew_lease(

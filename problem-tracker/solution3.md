@@ -40,6 +40,9 @@
 - 现状：`jobs/runtime.py` 无 semaphore/max_concurrent，批量任务可能同时写 SQLite 触发 `SQLITE_BUSY`，或打满 LLM/Milvus 配额。
 - 方案：worker 增加 `max_concurrent_tasks`（默认 5），领取任务前检查执行中任务数，达到上限则等待；或按任务类型（`memory_compaction`、`document_indexing`、`aiops_diagnosis`）分别限流。
 - 验证：并发触发 N 个任务，断言执行中数量不超过上限；恢复后继续处理。
+- 已完成：`BackgroundJobRuntime` 增加 `max_concurrent_per_kind` 配置与执行中计数，`claim_next` 支持按 kind 过滤（接口 + SQLite 实现）；`_claim_available` 以 `asyncio.Lock` 串行化“检查槽位 → 领取 → 计数”，消除多 worker 竞态。
+- 已完成：app.py 配置 `document_index`/`aiops_diagnosis`/`chat_memory_compaction` 各限 1，避免单一 kind 占满 worker。
+- 已补充限流测试：并发触发同类任务断言峰值不超过上限。
 
 ## 问题7的解决方案：AIOps 整图 wall-clock 超时（P1，建议优先）
 

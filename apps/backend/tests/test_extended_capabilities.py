@@ -100,6 +100,62 @@ async def test_background_runtime_recovers_leases_persists_events_and_retries(
 
 
 @pytest.mark.asyncio
+async def test_background_runtime_enforces_per_kind_concurrency_limit(
+    migrated_database_url: str,
+) -> None:
+    engine = create_memory_engine(migrated_database_url)
+    repository = SQLiteBackgroundJobRepository(create_memory_session_factory(engine))
+    active: dict[str, int] = {}
+    peak: dict[str, int] = {}
+
+    async def slow_handler(context: Any) -> None:
+        kind = context.job.kind
+        active[kind] = active.get(kind, 0) + 1
+        peak[kind] = max(peak.get(kind, 0), active[kind])
+        await asyncio.sleep(0.2)
+        active[kind] -= 1
+
+    runtime = BackgroundJobRuntime(
+        repository,
+        concurrency=2,
+        poll_seconds=0.01,
+        max_concurrent_per_kind={"slow": 1},
+    )
+    runtime.register("slow", slow_handler)
+    runtime.register("fast", slow_handler)
+    try:
+        for index in range(3):
+            await repository.enqueue(
+                owner_user_id="user-a",
+                job_id=f"slow-{index}",
+                kind="slow",
+                resource_type="test-resource",
+                resource_id=f"resource-{index}",
+                max_attempts=1,
+            )
+        await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="fast-1",
+            kind="fast",
+            resource_type="test-resource",
+            resource_id="resource-fast",
+            max_attempts=1,
+        )
+        await runtime.start()
+        await _wait_for_job(repository, "user-a", "slow-0", "succeeded")
+        await _wait_for_job(repository, "user-a", "slow-1", "succeeded")
+        await _wait_for_job(repository, "user-a", "slow-2", "succeeded")
+        await _wait_for_job(repository, "user-a", "fast-1", "succeeded")
+        await runtime.stop()
+    finally:
+        await runtime.stop()
+        await engine.dispose()
+
+    assert peak["slow"] == 1
+    assert peak["fast"] == 1
+
+
+@pytest.mark.asyncio
 async def test_feedback_api_updates_targets_and_enforces_owner_scope(
     migrated_database_url: str,
 ) -> None:

@@ -335,7 +335,14 @@ def create_app(
     app.state.mcp_connection_service = None
     if repositories.background_jobs is None:
         raise RuntimeError("Background job repository is required.")
-    background_runtime = BackgroundJobRuntime(repositories.background_jobs)
+    background_runtime = BackgroundJobRuntime(
+        repositories.background_jobs,
+        max_concurrent_per_kind={
+            "document_index": 1,
+            "aiops_diagnosis": 1,
+            "chat_memory_compaction": 1,
+        },
+    )
     background_runtime.register("document_index", _document_index_job_handler(app))
     background_runtime.register("aiops_diagnosis", _aiops_job_handler(app))
     background_runtime.register("chat_memory_compaction", _chat_memory_compaction_job_handler(app))

@@ -117,6 +117,7 @@ class SQLiteBackgroundJobRepository:
         worker_id: str,
         lease_expires_at: datetime,
         now: datetime | None = None,
+        kind: str | None = None,
     ) -> BackgroundJobRecord | None:
         claimed_at = now or utc_now()
         async with self._session_factory() as session, session.begin():
@@ -135,13 +136,16 @@ class SQLiteBackgroundJobRepository:
                     updated_at=claimed_at,
                 )
             )
+            filters = [
+                BackgroundJobModel.status == "queued",
+                BackgroundJobModel.available_at <= claimed_at,
+                BackgroundJobModel.cancel_requested_at.is_(None),
+            ]
+            if kind is not None:
+                filters.append(BackgroundJobModel.kind == kind)
             stmt = (
                 select(BackgroundJobModel)
-                .where(
-                    BackgroundJobModel.status == "queued",
-                    BackgroundJobModel.available_at <= claimed_at,
-                    BackgroundJobModel.cancel_requested_at.is_(None),
-                )
+                .where(*filters)
                 .order_by(
                     BackgroundJobModel.available_at.asc(),
                     BackgroundJobModel.created_at.asc(),

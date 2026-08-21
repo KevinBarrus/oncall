@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "limit-background-job-concurrency", link: "/changes/active/limit-background-job-concurrency/" },
   { text: "add-aiops-graph-timeout", link: "/changes/active/add-aiops-graph-timeout/" },
   { text: "clarify-single-user-tenant", link: "/changes/active/clarify-single-user-tenant/" },
   { text: "replace-fragile-json-extraction", link: "/changes/active/replace-fragile-json-extraction/" },
