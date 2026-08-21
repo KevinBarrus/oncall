@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "restrict-sqlite-file-permissions", link: "/changes/active/restrict-sqlite-file-permissions/" },
   { text: "add-evaluation-mock-mode", link: "/changes/active/add-evaluation-mock-mode/" },
   { text: "invalidate-bm25-cache-on-delete", link: "/changes/active/invalidate-bm25-cache-on-delete/" },
   { text: "dedupe-cross-turn-evidence", link: "/changes/active/dedupe-cross-turn-evidence/" },

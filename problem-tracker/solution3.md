@@ -97,7 +97,10 @@
 ## 问题12的解决方案：SQLite 文件权限（P2 可选）
 
 - 现状：`var/memory.sqlite3` 权限由 umask 决定，共享服务器上可能过宽。
-- 方案（可选）：`create_memory_engine()` 或启动脚本显式限制数据库文件权限（如 `0600`）；部署文档补充"生产建议：文件权限、磁盘加密"。
+- 方案（可选）：`create_memory_engine()` 或启动脚本显式限制数据库文件权限（如 `0600`）；部署文档补充“生产建议：文件权限、磁盘加密”。
+- 已完成：`create_memory_engine` 对 SQLite 文件 URL 预创建文件并强制 `chmod 0600`（覆盖首次创建与已存在文件）；`_sqlite_database_path` 统一解析绝对/相对/`:memory:` URL（对齐 SQLAlchemy 语义：4 斜杠绝对、3 斜杠相对 CWD）。
+- 已补充测试：新文件 0600、已存在文件收紧、`:memory:` 跳过、路径解析。
+- 限制：Windows chmod 语义不同（测试 skipif）；磁盘加密属部署层（部署文档已建议）。
 
 ## 问题13的解决方案：错误码契约测试（P2 可选）
 
