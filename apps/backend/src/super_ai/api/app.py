@@ -124,6 +124,7 @@ from super_ai.observability import (
     emit_event,
     reset_request_id,
     set_request_id,
+    snapshot_business_metrics,
 )
 from super_ai.project_config import project_config_section, required_int, required_str
 from super_ai.retrieval import KnowledgeRetrievalTool, RetrievalVectorStore
@@ -415,6 +416,7 @@ def create_app(
                 "requestCount": snapshot.request_count,
                 "failureCount": snapshot.failure_count,
                 "averageLatencyMs": round(average, 3),
+                "business": snapshot_business_metrics(),
             },
         )
 

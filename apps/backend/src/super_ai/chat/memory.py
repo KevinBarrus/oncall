@@ -22,7 +22,7 @@ from super_ai.memory.repositories import (
     JsonDict,
     MemoryRepositories,
 )
-from super_ai.observability import emit_event
+from super_ai.observability import emit_event, record_business_metric
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,7 @@ class ChatMemoryService:
                     last_compaction_error=exc.__class__.__name__,
                     last_compaction_failed_at=datetime.now(timezone.utc),
                 )
+                record_business_metric("chat_compaction_failures")
                 emit_event(
                     logger,
                     "chat.memory.compaction_failed",
@@ -199,6 +200,7 @@ class ChatMemoryService:
             session_id=current.id,
             context_tokens=candidate_tokens,
         )
+        record_business_metric("chat_context_tokens", float(candidate_tokens))
         return PreparedChatContext(
             session=updated or current,
             messages=tuple(candidate_messages),
@@ -348,6 +350,7 @@ class ChatMemoryService:
             message_count=session.compacted_message_count + len(messages),
             clear_compaction_error=True,
         )
+        record_business_metric("chat_compactions")
         return updated or session
 
 
@@ -405,6 +408,7 @@ async def maybe_compress_tool_output(
         compressionMode="sampled_fallback",
         failureCategory=failure_category,
     )
+    record_business_metric("tool_compression_fallbacks")
 
     return f"{capped[:4000]}\n\n[... 输出已按信号、首尾和时间线采样，原文约 {token_count} tokens]"
 

@@ -16,7 +16,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 
-from super_ai.observability import elapsed_ms, emit_event
+from super_ai.observability import elapsed_ms, emit_event, record_business_metric
 
 logger = logging.getLogger(__name__)
 _TOOL_DISCOVERY_TTL_SECONDS = 60
@@ -255,12 +255,14 @@ class LocalMcpClient:
         payload = [
             {"type": item.type, "text": getattr(item, "text", None)} for item in result.content
         ]
+        elapsed = elapsed_ms(started_at)
+        record_business_metric("mcp_tool_latency_ms", elapsed)
         emit_event(
             logger,
             "mcp.tool.completed",
             toolName=name,
             resultItemCount=len(payload),
-            durationMs=elapsed_ms(started_at),
+            durationMs=elapsed,
         )
         return payload
 

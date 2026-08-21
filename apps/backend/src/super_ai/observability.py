@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
+from threading import Lock
 from time import monotonic
 from typing import cast
 
@@ -77,6 +78,40 @@ def emit_event(logger: logging.Logger, event: str, **fields: object) -> None:
 def elapsed_ms(started_at: float) -> float:
     """Return an elapsed duration suitable for a structured event."""
     return round((monotonic() - started_at) * 1000, 3)
+
+
+_business_metrics: dict[str, tuple[float, int]] = {}
+_business_lock = Lock()
+
+
+def record_business_metric(name: str, amount: float = 1.0) -> None:
+    """Accumulate a business metric (total + sample count) for the /metrics endpoint.
+
+    事件计数（如 chat 请求数）调用默认 ``amount=1``；可观测值（如上下文 token、
+    MCP 延迟）调用时传数值，端点按 ``total / count`` 给出平均值。
+    """
+    with _business_lock:
+        total, samples = _business_metrics.get(name, (0.0, 0))
+        _business_metrics[name] = (total + amount, samples + 1)
+
+
+def snapshot_business_metrics() -> dict[str, dict[str, object]]:
+    """Snapshot accumulated business metrics with count, total, and average."""
+    with _business_lock:
+        return {
+            name: {
+                "count": samples,
+                "total": round(total, 2),
+                "average": round(total / samples, 2) if samples else 0.0,
+            }
+            for name, (total, samples) in sorted(_business_metrics.items())
+        }
+
+
+def reset_business_metrics() -> None:
+    """Clear accumulated business metrics (test isolation helper)."""
+    with _business_lock:
+        _business_metrics.clear()
 
 
 def _redact(value: object, *, parent_key: str | None = None) -> object:

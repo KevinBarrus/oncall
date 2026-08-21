@@ -174,6 +174,9 @@
 
 - 现状：`/metrics` 已存在（`app.py:396`，暴露 requestCount/failureCount/averageLatencyMs），缺业务指标。
 - 方案（可选）：补充 chat 请求数、平均上下文 token、压缩触发次数、MCP 调用延迟等自定义指标。
+- 已完成：`observability.py` 新增业务指标 registry（`record_business_metric`：total + samples，端点按 total/count 给平均，含测试隔离用的 reset）。
+- 已完成：指标点——chat 流请求数（`chat_streams`）、会话上下文 token（`chat_context_tokens`，平均）、记忆压缩成功/失败（`chat_compactions`/`chat_compaction_failures`）、工具输出压缩降级（`tool_compression_fallbacks`）、MCP 工具调用延迟（`mcp_tool_latency_ms`）；`/metrics` 端点输出 `business` 段。
+- 已补充测试：累加/平均/排序、`/metrics` 集成输出。
 
 ## 问题24的解决方案：速率限制（P2 可选）
 

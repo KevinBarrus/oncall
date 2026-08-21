@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [add-business-metrics](/changes/active/add-business-metrics/)
 - [retry-sse-connect](/changes/active/retry-sse-connect/)
 - [precheck-system-prompt-budget](/changes/active/precheck-system-prompt-budget/)
 - [assert-tenant-scope-boundaries](/changes/active/assert-tenant-scope-boundaries/)

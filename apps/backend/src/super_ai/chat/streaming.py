@@ -45,7 +45,7 @@ from super_ai.memory.repositories import (
     KnowledgeDocumentRepository,
     MemoryRepositories,
 )
-from super_ai.observability import elapsed_ms, emit_event
+from super_ai.observability import elapsed_ms, emit_event, record_business_metric
 from super_ai.retrieval import (
     KnowledgeRetrievalTool,
     create_langchain_knowledge_retrieval_tool,
@@ -179,6 +179,7 @@ class ChatStreamingService:
         accessible_knowledge_base_ids: Sequence[str],
     ) -> AsyncIterator[dict[str, object]]:
         """Serialize all mutations and Agent work across service processes."""
+        record_business_metric("chat_streams")
         token = uuid4().hex
         acquired = await self._repositories.chat.acquire_execution_lease(
             owner_user_id=owner_user_id,

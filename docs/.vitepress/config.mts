@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "add-business-metrics", link: "/changes/active/add-business-metrics/" },
   { text: "retry-sse-connect", link: "/changes/active/retry-sse-connect/" },
   { text: "precheck-system-prompt-budget", link: "/changes/active/precheck-system-prompt-budget/" },
   { text: "assert-tenant-scope-boundaries", link: "/changes/active/assert-tenant-scope-boundaries/" },
