@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "add-evaluation-mock-mode", link: "/changes/active/add-evaluation-mock-mode/" },
   { text: "invalidate-bm25-cache-on-delete", link: "/changes/active/invalidate-bm25-cache-on-delete/" },
   { text: "dedupe-cross-turn-evidence", link: "/changes/active/dedupe-cross-turn-evidence/" },
   { text: "track-audit-failures", link: "/changes/active/track-audit-failures/" },

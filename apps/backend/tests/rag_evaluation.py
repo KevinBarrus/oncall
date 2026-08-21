@@ -366,6 +366,39 @@ async def _generate_answer(
     return _extract_text(response), elapsed
 
 
+def _mock_retrieve(qa: Mapping[str, Any]) -> tuple[list[EvalRetrievedChunk], float]:
+    """确定性检索：从标准答案切句构造相关 chunk，source 取标注引用。"""
+    ground = cast(str, qa["ground_truth"])
+    reference = str(qa.get("reference") or "fixture")
+    sentences = [part.strip() for part in re.split(r"[。\n；]", ground) if part.strip()]
+    chunks = [
+        EvalRetrievedChunk(content=sentence, source=reference, chunk_id=f"fixture-{index}")
+        for index, sentence in enumerate(sentences[:2])
+    ]
+    if not chunks:
+        chunks = [EvalRetrievedChunk(content=ground, source=reference, chunk_id="fixture-0")]
+    return chunks, 1.0
+
+
+async def _mock_judge(
+    question: str,
+    answer: str,
+    contexts: list[str],
+    ground_truth: str,
+) -> tuple[dict[str, float | None], dict[str, str], dict[str, dict[str, object]]]:
+    """确定性替代 Judge：分数由 token 重叠得出，不调用 LLM。"""
+    overlap = _token_recall(ground_truth, answer)
+    context_overlap = _token_recall(ground_truth, "\n".join(contexts))
+    scores: dict[str, float | None] = {
+        "context_precision": round(context_overlap, 4),
+        "context_precision_at_3": round(context_overlap, 4),
+        "faithfulness": round(overlap, 4),
+        "answer_relevancy": round(overlap, 4),
+        "context_recall": round(context_overlap, 4),
+    }
+    return scores, {}, {}
+
+
 # ---------------------------------------------------------------------------
 # deterministic metrics (no LLM — manual labels)
 # ---------------------------------------------------------------------------
@@ -964,63 +997,83 @@ async def run_evaluation(
     limit: int | None = None,
     strategies: Sequence[StrategyId] = ALL_STRATEGIES,
     e2e: bool = False,
+    mock: bool = False,
 ) -> dict[str, object]:
     print("[0/6] Loading API keys & data ...")
-    siliconflow_key = _require_env("SILICONFLOW_API_KEY")
-    deepseek_key = _require_env("DEEPSEEK_API_KEY")
+    if mock:
+        print("      [mock] skipping API keys, LLM providers, Milvus, and CAG")
+    else:
+        siliconflow_key = _require_env("SILICONFLOW_API_KEY")
+        deepseek_key = _require_env("DEEPSEEK_API_KEY")
     qa_pairs = _load_qa_pairs(limit)
     print(f"      {len(qa_pairs)} questions loaded.")
 
     # Providers
     print("[1/6] Initializing providers ...")
-    llm_provider = build_default_llm_provider()
-    chat_model = llm_provider.create_chat_model()  # default LLM for answer generation
-    rerank_model = SiliconFlowRerankModel(api_key=siliconflow_key)
+    if mock:
+        llm_provider = None
+        chat_model = None
+        rerank_model = None
+        deepseek_judge = None
+    else:
+        llm_provider = build_default_llm_provider()
+        chat_model = llm_provider.create_chat_model()  # default LLM for answer generation
+        rerank_model = SiliconFlowRerankModel(api_key=siliconflow_key)
 
-    # DeepSeek judge
-    from langchain_openai import ChatOpenAI
+        # DeepSeek judge
+        from langchain_openai import ChatOpenAI
 
-    deepseek_judge = cast(
-        Any,
-        ChatOpenAI(
-            api_key=deepseek_key,
-            base_url=DEEPSEEK_BASE_URL,
-            model=DEEPSEEK_CHAT_MODEL,
-            temperature=0.0,
-            timeout=60,
-            max_retries=1,
-        ),
-    )
-    print(f"      LLM judge: {DEEPSEEK_CHAT_MODEL} @ {DEEPSEEK_BASE_URL}")
-    print(f"      Rerank: BAAI/bge-reranker-v2-m3 @ SiliconFlow")
+        deepseek_judge = cast(
+            Any,
+            ChatOpenAI(
+                api_key=deepseek_key,
+                base_url=DEEPSEEK_BASE_URL,
+                model=DEEPSEEK_CHAT_MODEL,
+                temperature=0.0,
+                timeout=60,
+                max_retries=1,
+            ),
+        )
+        print(f"      LLM judge: {DEEPSEEK_CHAT_MODEL} @ {DEEPSEEK_BASE_URL}")
+        print(f"      Rerank: BAAI/bge-reranker-v2-m3 @ SiliconFlow")
 
     # Vector store
     print("[2/6] Checking vector store ...")
-    vector_store = build_default_milvus_vector_store()
-    health = vector_store.health_check()
-    if not health.ok:
-        print(f"      [FAIL] Milvus unavailable: {health.error}")
-        sys.exit(1)
-    print(f"      {health.collection_name} @ {health.uri} ({health.latency_ms:.1f}ms)")
+    if mock:
+        vector_store = None
+        embedding_model = None
+        chunks_corpus: list[EvalRetrievedChunk] = []
+        kb_id: str | None = None
+        owner_id = "rag-eval"
+        print("      [mock] skipping Milvus and chunk corpus")
+    else:
+        vector_store = build_default_milvus_vector_store()
+        health = vector_store.health_check()
+        if not health.ok:
+            print(f"      [FAIL] Milvus unavailable: {health.error}")
+            sys.exit(1)
+        print(f"      {health.collection_name} @ {health.uri} ({health.latency_ms:.1f}ms)")
 
-    # Knowledge base
-    kb_id = await _discover_knowledge_base_id()
-    kb_ids = [kb_id] if kb_id else []
-    owner_id = kb_id[3:] if kb_id and kb_id.startswith("kb_") else "rag-eval"
-    print(f"      KB: {kb_id or 'N/A'}")
+        # Knowledge base
+        kb_id = await _discover_knowledge_base_id()
+        kb_ids = [kb_id] if kb_id else []
+        owner_id = kb_id[3:] if kb_id and kb_id.startswith("kb_") else "rag-eval"
+        print(f"      KB: {kb_id or 'N/A'}")
 
-    # Embedding model & chunks corpus
-    embedding_model = llm_provider.create_embedding_model()
-    chunks_corpus = (
-        await _load_chunks_corpus(vector_store, owner_id, kb_ids)
-        if kb_ids
-        else []
-    )
-    print(f"      Chunks corpus: {len(chunks_corpus)} chunks")
+        # Embedding model & chunks corpus
+        embedding_model = llm_provider.create_embedding_model()
+        chunks_corpus = (
+            await _load_chunks_corpus(vector_store, owner_id, kb_ids)
+            if kb_ids
+            else []
+        )
+        print(f"      Chunks corpus: {len(chunks_corpus)} chunks")
 
     # ── CAG: one-time local model load + KV Cache precomputation ──
     cag_state: dict[str, Any] | None = None
-    if "cag-kvcache" in strategies:
+    if mock:
+        cag_state = None
+    elif "cag-kvcache" in strategies:
         from cag_runner import (
             answer_question as _cag_answer,
             ensure_model,
@@ -1070,7 +1123,10 @@ async def run_evaluation(
 
             cache_load_ms = 0.0
             try:
-                if strategy_id == "cag-kvcache" and cag_state:
+                if mock:
+                    contexts, retrieval_ms = await _mock_retrieve(qa)
+                    answer, generation_ms = ground_truth, 1.0
+                elif strategy_id == "cag-kvcache" and cag_state:
                     # CAG: local model generates directly from KV Cache (no retrieval)
                     cag_contexts, answer, gen_sec = await asyncio.to_thread(
                         cag_state["answer_fn"],
@@ -1101,13 +1157,21 @@ async def run_evaluation(
             recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
 
             # LLM scores
-            llm_scores, judge_errors, judge_stats = await _score_one_question(
-                deepseek_judge,
-                question,
-                answer,
-                [chunk.content for chunk in contexts],
-                ground_truth,
-            )
+            if mock:
+                llm_scores, judge_errors, judge_stats = await _mock_judge(
+                    question,
+                    answer,
+                    [chunk.content for chunk in contexts],
+                    ground_truth,
+                )
+            else:
+                llm_scores, judge_errors, judge_stats = await _score_one_question(
+                    deepseek_judge,
+                    question,
+                    answer,
+                    [chunk.content for chunk in contexts],
+                    ground_truth,
+                )
 
             # Error classification
             error_cat: ErrorCategory | str = "judge-unavailable" if judge_errors else _classify_error(
@@ -1159,7 +1223,8 @@ async def run_evaluation(
                 f"| ret={retrieval_ms:.0f}ms{gen_display} | [{error_cat}]"
             )
 
-            await asyncio.sleep(0.3)  # rate limit
+            if not mock:
+                await asyncio.sleep(0.3)  # rate limit
 
         # Aggregate metrics
         agg: dict[str, object] = {}
@@ -1236,25 +1301,28 @@ async def run_evaluation(
     print(f"\n{'='*60}")
     print(f"  [{len(strategies)+3}/{len(strategies)+2}] Gold-document baseline")
     print(f"{'='*60}")
-    gold_document_baseline = await _evaluate_generation_baseline(
-        chat_model,
-        deepseek_judge,
-        qa_pairs,
-        name="gold-document baseline",
-        context_for=_gold_document_contexts,
-    )
-    gold_document_averages = cast(dict[str, object], gold_document_baseline["averages"])
-    print(
-        f"  AR={_score_display(gold_document_averages.get('answer_relevancy'))}  "
-        f"F={_score_display(gold_document_averages.get('faithfulness'))}"
-    )
-    answer_injection = await _evaluate_generation_baseline(
-        chat_model,
-        deepseek_judge,
-        qa_pairs,
-        name="answer-injection sanity check",
-        context_for=_answer_injection_contexts,
-    )
+    gold_document_baseline: dict[str, object] = {}
+    answer_injection: dict[str, object] = {}
+    if not mock:
+        gold_document_baseline = await _evaluate_generation_baseline(
+            chat_model,
+            deepseek_judge,
+            qa_pairs,
+            name="gold-document baseline",
+            context_for=_gold_document_contexts,
+        )
+        gold_document_averages = cast(dict[str, object], gold_document_baseline["averages"])
+        print(
+            f"  AR={_score_display(gold_document_averages.get('answer_relevancy'))}  "
+            f"F={_score_display(gold_document_averages.get('faithfulness'))}"
+        )
+        answer_injection = await _evaluate_generation_baseline(
+            chat_model,
+            deepseek_judge,
+            qa_pairs,
+            name="answer-injection sanity check",
+            context_for=_answer_injection_contexts,
+        )
 
     end_to_end: dict[str, object] | None = None
     if e2e:
@@ -1285,6 +1353,7 @@ async def run_evaluation(
                 "note": "跨模型裁判：DeepSeek 评估 Qwen 生成内容，存在系统性偏差，分数仅供参考。",
             },
             "rerankModel": "BAAI/bge-reranker-v2-m3",
+            "mock": mock,
             "e2e": e2e,
             "datasetDistribution": _dataset_distribution(qa_pairs),
         },
@@ -1570,6 +1639,9 @@ def main() -> None:
         action="store_true",
         help="Also evaluate the real HTTP/SSE chat Agent path",
     )
+    parser.add_argument(
+        "--mock", action="store_true", help="Run offline with deterministic fixtures"
+    )
     args = parser.parse_args()
 
     if args.report:
@@ -1582,7 +1654,9 @@ def main() -> None:
         return
 
     strategies = (cast(StrategyId, args.strategy),) if args.strategy else ALL_STRATEGIES
-    payload = asyncio.run(run_evaluation(args.limit, strategies=strategies, e2e=args.e2e))
+    payload = asyncio.run(
+        run_evaluation(args.limit, strategies=strategies, e2e=args.e2e, mock=args.mock)
+    )
     _print_comparison_report(payload)
 
 
@@ -1749,6 +1823,20 @@ class TestRagEvaluation:
         cat = _classify_error(ctxs, "nginx upstream timeout configuration",
                               cp_score=0.35, cr_score=0.5, faithfulness=0.9, answer_relevancy=0.85)
         assert cat == "partial-hit", f"Expected partial-hit, got {cat}"
+
+    @pytest.mark.asyncio
+    async def test_mock_evaluation_pipeline_completes(self) -> None:
+        payload = await run_evaluation(limit=3, mock=True)
+        assert cast(dict[str, object], payload["config"])["mock"] is True
+        strategies = cast(dict[str, object], payload["strategies"])
+        assert len(strategies) == len(ALL_STRATEGIES)
+        for run in strategies.values():
+            metrics = cast(dict[str, object], cast(dict[str, object], run)["metrics"])
+            assert "mrr" in metrics
+            assert "ndcg_at_5" in metrics
+            assert "atomic_fact_recall_at_5" in metrics
+        assert cast(dict[str, object], payload["goldDocumentBaseline"]) == {}
+        assert "lowScoreSamples" in payload
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ from typing import cast
 
 import httpx
 import jieba
+import pytest
 
 from super_ai.aiops.fixtures import JAVA_ECOMMERCE_INCIDENTS, JavaEcommerceIncident
 
@@ -276,13 +277,27 @@ def _summary(results: Sequence[Mapping[str, object]]) -> dict[str, object]:
     }
 
 
-async def run_evaluation(limit: int | None = None) -> dict[str, object]:
+async def run_evaluation(limit: int | None = None, mock: bool = False) -> dict[str, object]:
     incidents = (
         list(JAVA_ECOMMERCE_INCIDENTS)[:limit]
         if limit is not None
         else list(JAVA_ECOMMERCE_INCIDENTS)
     )
     results: list[dict[str, object]] = []
+    if mock:
+        for incident in incidents:
+            result = _mock_evaluate_one_incident(incident)
+            results.append(result)
+            print(
+                f"  {incident.incident_id}: status={result['status']} "
+                f"rootCause={result['rootCauseHit']}"
+            )
+        return {
+            "status": "completed",
+            "mock": True,
+            "summary": _summary(results),
+            "results": results,
+        }
     async with httpx.AsyncClient(base_url=E2E_API_BASE_URL, timeout=300.0) as client:
         credentials = await _discover_eval_credentials(client)
         if credentials is None:
@@ -297,6 +312,31 @@ async def run_evaluation(limit: int | None = None) -> dict[str, object]:
                 f"rootCause={result['rootCauseHit']}"
             )
     return {"status": "completed", "summary": _summary(results), "results": results}
+
+
+def _mock_evaluate_one_incident(incident: JavaEcommerceIncident) -> dict[str, object]:
+    """离线路演：用确定性 mock 报告走同一套指标计算，不访问后端。"""
+    report_text = (
+        f"服务 {incident.service} 出现 {incident.symptom}。\n"
+        f"根因：{incident.root_cause}。\n"
+        f"处理建议：{'；'.join(incident.recovery_steps)}。"
+    )
+    evidence = [
+        {"kind": "knowledge_reference", "source": "sop", "summary": incident.sop_id},
+        {"kind": "log", "source": "cls", "summary": f"trace {incident.trace_id}"},
+    ]
+    tool_calls = [{"toolName": "SearchLog", "status": "completed"}]
+    return {
+        "incidentId": incident.incident_id,
+        "status": "succeeded",
+        "rootCauseHit": root_cause_hit(report_text, incident),
+        "recoveryHit": recovery_action_hit(report_text, incident),
+        "refusalDetected": refusal_detected(report_text),
+        "coverage": evidence_coverage(evidence, tool_calls, incident),
+        "elapsedSeconds": 0.0,
+        "evidenceCount": len(evidence),
+        "toolCallCount": len(tool_calls),
+    }
 
 
 def _print_report(payload: dict[str, object]) -> None:
@@ -322,6 +362,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AIOps diagnosis quality evaluation")
     parser.add_argument("--limit", type=int, default=None, help="Limit incident cases")
     parser.add_argument("--report", action="store_true", help="Print report from cached results")
+    parser.add_argument(
+        "--mock", action="store_true", help="Run offline with deterministic fixtures"
+    )
     args = parser.parse_args()
 
     if args.report:
@@ -334,7 +377,7 @@ def main() -> None:
         return
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    payload = asyncio.run(run_evaluation(limit=args.limit))
+    payload = asyncio.run(run_evaluation(limit=args.limit, mock=args.mock))
     if payload.get("status") == "completed":
         with open(RESULTS_DIR / "eval_latest.json", "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
@@ -434,6 +477,20 @@ class TestAiopsEvaluation:
         result = sop_ranking_compare(retrieval, {}, "sop-a")
         assert result["retrieval_rank"] == 1
         assert result["belief_rank"] == 1
+
+    @pytest.mark.asyncio
+    async def test_mock_evaluation_pipeline_completes(self) -> None:
+        payload = await run_evaluation(mock=True)
+        assert payload["status"] == "completed"
+        assert payload["mock"] is True
+        summary = cast(dict[str, object], payload["summary"])
+        assert summary["caseCount"] == len(JAVA_ECOMMERCE_INCIDENTS)
+        assert summary["succeededCount"] == len(JAVA_ECOMMERCE_INCIDENTS)
+        assert 0 <= float(cast(float, summary["rootCauseHitRate"])) <= 1
+        assert 0 <= float(cast(float, summary["logCoverageRate"])) <= 1
+        assert len(cast(list[dict[str, object]], payload["results"])) == len(
+            JAVA_ECOMMERCE_INCIDENTS
+        )
 
 
 if __name__ == "__main__":

@@ -76,6 +76,9 @@
 
 - 现状：`aiops_evaluation.py`/`rag_evaluation.py` 依赖真实 API（`AIOPS_EVAL_API_BASE_URL`/`RAG_API_BASE_URL`），离线无法调试指标逻辑。
 - 方案（可选）：提供 `tests/fixtures/` mock 响应（3-5 案例），评测脚本加 `--mock` 参数走 fixture，CI 跑 mock 评测保证指标计算不回归。
+- 已完成：AIOps 评测新增 `--mock`——`_mock_evaluate_one_incident` 用 incident 数据构造确定性报告/证据/工具调用，走 `root_cause_hit` 等真实指标与 `_summary` 汇总。
+- 已完成：RAG 评测新增 `--mock`——跳过 API keys/Milvus/LLM/CAG，`_mock_retrieve` 从标准答案切句构造 chunk（source 取标注引用），`_mock_judge` 用 token 重叠出确定性分数，answer 取 ground_truth，跳过 gold/answer-injection baselines。
+- 已完成：两个脚本新增 mock 管线测试（`run_evaluation(mock=True)` 直接在 pytest 中运行），CI 自动执行；`.gitignore` 补充 aiops 评测结果目录。
 
 ## 问题10的解决方案：全局日志脱敏（P1，安全加固）
 

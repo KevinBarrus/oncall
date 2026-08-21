@@ -18,6 +18,7 @@ openspec从0到1项目实战的提示词.md
 config/project.json
 config/user.project.json
 apps/backend/tests/data/eval_results/
+apps/backend/tests/data/aiops_eval_results/
 apps/backend/tests/data/cache_knowledge.pt
 apps/backend/tests/.env.test
 CLAIM.md
