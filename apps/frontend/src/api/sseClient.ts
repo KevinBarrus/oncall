@@ -11,24 +11,21 @@ export interface SseClient {
   stream(path: string, init?: RequestInit): AsyncIterable<SseEvent>;
 }
 
+const STREAM_CONNECT_ATTEMPTS = 2;
+const STREAM_RETRY_DELAYS_MS = [500, 1000] as const;
+
 export function createSseClient(options: ApiClientOptions): SseClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
 
   return {
     async *stream(path: string, init: RequestInit = {}): AsyncIterable<SseEvent> {
-      const response = await fetchImpl(`${baseUrl}${path}`, {
-        ...init,
-        headers: buildTransportHeaders({
-          accept: "text/event-stream",
-          body: init.body,
-          headers: init.headers,
-          token: options.getAccessToken()
-        })
-      });
-      if (!response.ok) {
-        throw new ApiClientError(await readApiError(response), response.status);
-      }
+      const response = await connectWithRetry(
+        fetchImpl,
+        `${baseUrl}${path}`,
+        init,
+        () => options.getAccessToken()
+      );
       if (response.body === null) {
         throw new ApiClientError({
           code: "SYSTEM_UNAVAILABLE",
@@ -56,6 +53,48 @@ export function createSseClient(options: ApiClientOptions): SseClient {
       yield* parsed.events;
     }
   };
+}
+
+async function connectWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  getAccessToken: () => string | null
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= STREAM_CONNECT_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetchImpl(url, {
+        ...init,
+        headers: buildTransportHeaders({
+          accept: "text/event-stream",
+          body: init.body,
+          headers: init.headers,
+          token: getAccessToken()
+        })
+      });
+      if (!response.ok) {
+        throw new ApiClientError(await readApiError(response), response.status);
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof ApiClientError) {
+        throw error; // 服务端明确错误（非 2xx）不重试
+      }
+      lastError = error;
+      if (attempt < STREAM_CONNECT_ATTEMPTS) {
+        await delay(STREAM_RETRY_DELAYS_MS[attempt] ?? 500);
+      }
+    }
+  }
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error("无法连接服务，请检查网络后重试。");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseSseFrames(buffer: string): {

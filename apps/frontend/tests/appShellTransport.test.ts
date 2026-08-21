@@ -77,4 +77,86 @@ describe("application transport", () => {
       expect.objectContaining({ delta: "Hi", type: "content.delta" })
     ]);
   });
+
+  it("retries connection failures before the stream starts", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"id":"evt_1","type":"content.delta","channel":"chat",'
+          )
+        );
+        controller.enqueue(encoder.encode('"timestamp":"2026-07-10T00:00:00Z","delta":"Hi","sequence":1}\n\n'));
+        controller.close();
+      }
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(
+        new Response(body, { headers: { "Content-Type": "text/event-stream" }, status: 200 })
+      );
+    const sse = createSseClient({
+      baseUrl: "http://api.test",
+      fetchImpl,
+      getAccessToken: () => "token_1"
+    });
+
+    const events = [];
+    for await (const event of sse.stream("/chat/sessions/session_1/messages:stream", {
+      method: "POST"
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({ delta: "Hi", type: "content.delta" })
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry explicit server errors", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("upstream exploded", { status: 502 })
+    );
+    const sse = createSseClient({
+      baseUrl: "http://api.test",
+      fetchImpl,
+      getAccessToken: () => null
+    });
+
+    await expect(
+      (async () => {
+        for await (const _event of sse.stream("/chat/sessions/session_1/messages:stream", {
+          method: "POST"
+        })) {
+          // consume
+        }
+      })()
+    ).rejects.toMatchObject({ status: 502 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces the last error after retries are exhausted", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    const sse = createSseClient({
+      baseUrl: "http://api.test",
+      fetchImpl,
+      getAccessToken: () => null
+    });
+
+    await expect(
+      (async () => {
+        for await (const _event of sse.stream("/chat/sessions/session_1/messages:stream", {
+          method: "POST"
+        })) {
+          // consume
+        }
+      })()
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
 });
