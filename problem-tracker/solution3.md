@@ -120,6 +120,9 @@
 
 - 现状：Alembic 迁移的 downgrade 未被测试。
 - 方案（可选）：CI 增加 `alembic upgrade head && alembic downgrade -1 && alembic upgrade head`；含数据转换的迁移在 downgrade 明确 `raise NotImplementedError` 并注明单向。
+- 已完成：`test_memory_migrations.py` 新增两个回滚测试——单步回滚（upgrade head → downgrade -1 → upgrade head，通过 `alembic_version` 表断言版本回到 head）与全链回滚（upgrade head → downgrade base → upgrade head，断言必需表完整）。
+- 已验证：26 个迁移全部实现 downgrade 且全链回滚可执行，无数据转换迁移需要单向标注。
+- 说明：`command.current` 只打印不返回值，版本断言改用 SQL 查询 `alembic_version`。
 
 ## 问题16的解决方案：MCP 关闭旧客户端（已实现，无需修复）
 

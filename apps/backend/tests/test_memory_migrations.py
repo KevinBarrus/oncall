@@ -4,7 +4,8 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import JSON, create_engine, inspect
+from alembic.script import ScriptDirectory
+from sqlalchemy import JSON, create_engine, inspect, text
 
 from super_ai.memory.models import Base
 
@@ -68,6 +69,43 @@ def test_alembic_upgrade_creates_memory_tables(tmp_path: Path) -> None:
         "ix_user_chat_skills_owner_filename",
         "ix_user_chat_skills_owner_updated_at",
     } <= index_names
+
+
+def test_alembic_downgrade_single_step_round_trip(tmp_path: Path) -> None:
+    database_path = tmp_path / "step-roundtrip.sqlite3"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+
+    command.downgrade(config, "-1")
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        version = engine.connect().execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
+    finally:
+        engine.dispose()
+    assert version == head
+
+
+def test_alembic_full_downgrade_round_trip_preserves_schema(tmp_path: Path) -> None:
+    database_path = tmp_path / "full-roundtrip.sqlite3"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "head")
+    command.downgrade(config, "base")
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        table_names = set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert REQUIRED_MEMORY_TABLES <= table_names
+    assert "alembic_version" in table_names
 
 
 def test_memory_metadata_exposes_required_tables_and_json_columns() -> None:
