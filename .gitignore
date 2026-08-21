@@ -27,3 +27,6 @@ RESOURCES.md
 assets/
 lessons/
 reference/
+apps/backend/.coverage
+apps/backend/coverage.json
+apps/backend/.coverage.*
