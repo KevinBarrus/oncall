@@ -13,7 +13,8 @@
 
 - 现状：`_wrap_tool_output_compression` 对全部工具套压缩包装，`read_tool_output_evidence` 返回的原文被再次压缩成摘要并生成新 evidenceId，证据展开机制对唯一目标场景失效，且每次展开写入重复 evidence 行。
 - 方案：包装循环按名称跳过 `read_tool_output_evidence`（以及 `load_skill` 等内容本身即指令的自指工具）；补充回归测试"调用 read_tool_output_evidence 返回的字符串与 evidence.content 完全相等"。
-- 验证：构造大输出工具 → 压缩 → 展开，断言展开结果等于原始内容。
+- 已完成：`_NO_COMPRESSION_TOOL_NAMES` 豁免名单（`read_tool_output_evidence`/`load_skill`），`_wrap_tool_output_compression` 入口直接返回原工具；新增 3 个回归测试（证据展开返回原文、Skill 指令原文保留、普通大输出工具仍被包装）。
+- 验证：`uv run pytest -m "not local_config"` = 219 passed（新增 3 个）；ruff/pyright 全绿。
 
 ## 问题2的解决方案：压缩路径并发互斥（P1）
 

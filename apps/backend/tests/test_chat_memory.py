@@ -11,8 +11,10 @@ from typing import Any, cast
 import pytest
 from alembic import command
 from alembic.config import Config
+from langchain_core.tools import StructuredTool
 
 from super_ai.chat import streaming as streaming_module
+from super_ai.chat.configuration import SelectedChatSkill
 from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
@@ -28,9 +30,13 @@ from super_ai.chat.memory import (
     maybe_compress_tool_output,
 )
 from super_ai.chat.streaming import (
+    ChatAgentRequest,
     ChatAgentRunner,
     ChatAgentToolCall,
     ChatStreamingService,
+    _wrap_tool_output_compression,  # pyright: ignore[reportPrivateUsage]
+    create_load_skill_tool,
+    create_read_tool_output_evidence_tool,
 )
 from super_ai.llm import LlmProvider
 from super_ai.memory.database import create_memory_engine, create_memory_session_factory
@@ -340,6 +346,104 @@ async def test_structured_tool_compression_keeps_machine_readable_metadata() -> 
     compression = result["_compression"]
     assert isinstance(compression, dict)
     assert compression["sourceHash"]
+
+
+@pytest.mark.asyncio
+async def test_read_evidence_tool_skips_compression_and_returns_original(
+    migrated_database_url: str,
+) -> None:
+    """回归：read_tool_output_evidence 不得被压缩包装击穿（问题1）。"""
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="chat-evidence-unwrap"
+        )
+        evidence_repo = cast(Any, repositories.compressed_tool_evidence)
+        original = "x" * 12_000  # 远超 2000 token 压缩阈值
+        evidence = await evidence_repo.create(
+            owner_user_id="user-a",
+            chat_session_id=session.id,
+            tool_name="SearchLog",
+            content=original,
+            source_hash="hash-unwrap",
+        )
+        request = ChatAgentRequest(
+            owner_user_id="user-a",
+            session_id=session.id,
+            system_prompt="system",
+            messages=[],
+            accessible_knowledge_base_ids=(),
+        )
+        tool = create_read_tool_output_evidence_tool(request, evidence_repo)
+        wrapped = _wrap_tool_output_compression(
+            tool,
+            cast(LlmProvider, CountingProvider(token_count=10_000)),
+            request,
+            evidence_repo,
+        )
+        # 修复前：被替换为压缩 coroutine，返回摘要而非原文
+        assert wrapped is tool
+        coroutine = wrapped.coroutine
+        assert coroutine is not None
+        assert await coroutine(evidence_id=evidence.id) == original
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_load_skill_tool_skips_compression_wrapper() -> None:
+    """回归：load_skill 返回指令原文，不得被压缩包装（问题1 覆盖范围）。"""
+    skill = SelectedChatSkill(
+        name="runbook",
+        description="故障处理手册",
+        content="Step 1: 检查告警\nStep 2: 按 SOP 处理\n" + "x" * 10_000,
+    )
+    tool = create_load_skill_tool((skill,))
+    wrapped = _wrap_tool_output_compression(
+        tool,
+        cast(LlmProvider, CountingProvider(token_count=10_000)),
+        ChatAgentRequest(
+            owner_user_id="user-a",
+            session_id="chat-skill-unwrap",
+            system_prompt="system",
+            messages=[],
+            accessible_knowledge_base_ids=(),
+        ),
+        None,
+    )
+    assert wrapped is tool
+    coroutine = wrapped.coroutine
+    assert coroutine is not None
+    loaded = await coroutine(skill_name="runbook")
+    assert "Step 1: 检查告警" in str(loaded)
+
+
+@pytest.mark.asyncio
+async def test_large_async_tool_still_gets_compression_wrapper() -> None:
+    """防止豁免名单误伤：普通大输出 async 工具仍应被压缩包装。"""
+
+    async def big_output() -> str:
+        return "y" * 12_000
+
+    tool = StructuredTool.from_function(coroutine=big_output, name="big_output", description="")
+    wrapped = _wrap_tool_output_compression(
+        tool,
+        cast(LlmProvider, FailingProvider()),
+        ChatAgentRequest(
+            owner_user_id="user-a",
+            session_id="chat-big-output",
+            system_prompt="system",
+            messages=[],
+            accessible_knowledge_base_ids=(),
+        ),
+        None,
+    )
+    assert wrapped is not tool
+    coroutine = wrapped.coroutine
+    assert coroutine is not None
+    result = await coroutine()
+    assert "[... 输出已按信号" in str(result)
 
 
 @pytest.fixture

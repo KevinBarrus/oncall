@@ -759,6 +759,9 @@ class LangChainChatAgentRunner:
 # tool output compression
 # ---------------------------------------------------------------------------
 
+# 返回内容本身即给模型执行原文的工具：压缩包装会破坏证据展开/Skill 指令语义
+_NO_COMPRESSION_TOOL_NAMES = frozenset({"read_tool_output_evidence", "load_skill"})
+
 
 def _wrap_tool_output_compression(
     tool: StructuredTool,
@@ -769,8 +772,13 @@ def _wrap_tool_output_compression(
     """Wrap an async tool so large outputs are auto-compressed via LLM.
 
     Sync tools are returned unchanged — their outputs are always tiny
-    (e.g. ``get_current_time``).
+    (e.g. ``get_current_time``).  Tools whose content is the instruction
+    itself (``read_tool_output_evidence``, ``load_skill``) are also kept
+    as-is, since compressing them would break evidence expansion or Skill
+    directives.
     """
+    if tool.name in _NO_COMPRESSION_TOOL_NAMES:
+        return tool
     original_coro = getattr(tool, "coroutine", None)
     if original_coro is None:
         return tool  # sync tool — no wrapping needed

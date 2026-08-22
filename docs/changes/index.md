@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [exempt-self-referential-tools-from-compression](/changes/active/exempt-self-referential-tools-from-compression/)
 - [add-coverage-thresholds](/changes/active/add-coverage-thresholds/)
 - [rate-limit-high-cost-endpoints](/changes/active/rate-limit-high-cost-endpoints/)
 - [add-business-metrics](/changes/active/add-business-metrics/)
