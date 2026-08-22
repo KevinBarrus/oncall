@@ -317,6 +317,19 @@ class SQLiteChatMemoryRepository:
                     ArchivedChatMessageModel.session_id == session_id,
                 )
             )
+            # 一并清理会话关联的压缩证据原文与工具审计，避免全量残留
+            await session.execute(
+                sql_delete(CompressedToolEvidenceModel).where(
+                    CompressedToolEvidenceModel.owner_user_id == owner_user_id,
+                    CompressedToolEvidenceModel.chat_session_id == session_id,
+                )
+            )
+            await session.execute(
+                sql_delete(AgentToolCallAuditModel).where(
+                    AgentToolCallAuditModel.owner_user_id == owner_user_id,
+                    AgentToolCallAuditModel.chat_session_id == session_id,
+                )
+            )
             parent.updated_at = timestamp
             parent.memory_summary = None
             parent.compacted_message_count = 0
@@ -959,6 +972,18 @@ class SQLiteCompressedToolEvidenceRepository:
         )
         async with self._session_factory() as session:
             await _require_chat_session(session, owner_user_id, chat_session_id)
+            # 同一 (会话, source_hash) 已有证据时不重复写入原文，避免全量重复行
+            existing = (
+                await session.scalars(
+                    select(CompressedToolEvidenceModel).where(
+                        CompressedToolEvidenceModel.owner_user_id == owner_user_id,
+                        CompressedToolEvidenceModel.chat_session_id == chat_session_id,
+                        CompressedToolEvidenceModel.source_hash == source_hash,
+                    )
+                )
+            ).first()
+            if existing is not None:
+                return _compressed_tool_evidence_record(existing)
             session.add(row)
             await session.commit()
         return _compressed_tool_evidence_record(row)

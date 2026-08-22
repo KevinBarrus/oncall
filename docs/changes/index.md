@@ -6,6 +6,8 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [serialize-rest-append-with-lease](/changes/active/serialize-rest-append-with-lease/)
+- [purge-compressed-evidence-on-clear](/changes/active/purge-compressed-evidence-on-clear/)
 - [sanitize-exc-info-log-output](/changes/active/sanitize-exc-info-log-output/)
 - [align-hard-limit-spec-wording](/changes/active/align-hard-limit-spec-wording/)
 - [map-timed-out-frontend-status](/changes/active/map-timed-out-frontend-status/)

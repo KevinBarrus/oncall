@@ -2,6 +2,8 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "serialize-rest-append-with-lease", link: "/changes/active/serialize-rest-append-with-lease/" },
+  { text: "purge-compressed-evidence-on-clear", link: "/changes/active/purge-compressed-evidence-on-clear/" },
   { text: "sanitize-exc-info-log-output", link: "/changes/active/sanitize-exc-info-log-output/" },
   { text: "align-hard-limit-spec-wording", link: "/changes/active/align-hard-limit-spec-wording/" },
   { text: "map-timed-out-frontend-status", link: "/changes/active/map-timed-out-frontend-status/" },

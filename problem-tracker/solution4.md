@@ -61,13 +61,17 @@
 
 - 现状：`POST /chat/sessions/{id}/messages`（非流式）不获取执行租约（与 `:stream` 不对称）、不在限流范围。
 - 方案：与问题2 一并处理（复用执行租约）；是否加限流属产品决策（本地单用户低风险）。
-- 验证：随问题2 的交错测试覆盖。
+- 已完成：append user 分支（prepare_message 含 95% 内联压缩）获取/释放执行租约（token=uuid4、900s 过期与流式一致），流式执行中 append 返回 `CHAT_SESSION_BUSY`（409）；assistant 分支保持无租约（纯插入）。限流部分按产品决策不实施（本地单用户低风险，solution3 问题24 已覆盖三个高成本端点）。
+- 已补充测试：持租约时 REST append user 消息返回 409 CHAT_SESSION_BUSY。
+- 验证：`uv run pytest -m "not local_config"` = 228 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题8的解决方案：clear_messages 清理压缩证据（P2）
 
 - 现状：`clear_messages` 只删消息与归档并重置记忆，`compressed_tool_evidence` 与审计行残留且持续增长；evidence 写入无 `source_hash` 去重（会话删除场景已由级联处理，仅清空场景残留）。
 - 方案：`clear_messages` 事务内一并删除两表的 session 关联行；evidence 写入按 `(chat_session_id, source_hash)` 去重。
-- 验证：清空会话后断言 evidence/审计行计数为 0。
+- 已完成：`clear_messages` 事务内删除 `compressed_tool_evidence` 与 `tool_call_audits` 的会话关联行（audit 的 diagnostic 关联不受影响）；`SQLiteCompressedToolEvidenceRepository.create` 按 `(会话, source_hash)` 去重，同 hash 返回已有行不重复写原文。
+- 已补充测试：同 hash 两次 create 返回同一行；clear 后 evidence 查询为 None、audit 列表为空。
+- 验证：`uv run pytest -m "not local_config"` = 228 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题9的解决方案：后台压缩失败记账（P2）
 

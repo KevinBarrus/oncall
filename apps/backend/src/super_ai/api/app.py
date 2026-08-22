@@ -9,7 +9,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from time import monotonic
@@ -61,6 +61,9 @@ from super_ai.chat.memory import (
     ChatContextLimitReached,
     ChatMemoryService,
     memory_payload,
+)
+from super_ai.chat.streaming import (
+    _CHAT_EXECUTION_LEASE_SECONDS,  # pyright: ignore[reportPrivateUsage]
 )
 from super_ai.documents import (
     ALLOWED_DOCUMENT_EXTENSIONS,
@@ -1267,20 +1270,37 @@ def create_app(
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
         if body.role == "user":
-            history = await repositories.chat.list_active_messages(
-                owner_user_id=user.id, session_id=session.id
+            token = uuid4().hex
+            acquired = await repositories.chat.acquire_execution_lease(
+                owner_user_id=user.id,
+                session_id=session.id,
+                token=token,
+                expires_at=(
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=_CHAT_EXECUTION_LEASE_SECONDS)
+                ),
             )
-            service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
+            if not acquired:
+                raise ApiErrorException("CHAT_SESSION_BUSY")
             try:
-                await service.prepare_message(
-                    owner_user_id=user.id,
-                    session=session,
-                    history=history,
-                    system_prompt=prompt,
-                    content=body.content,
+                history = await repositories.chat.list_active_messages(
+                    owner_user_id=user.id, session_id=session.id
                 )
-            except ChatContextLimitReached as exc:
-                raise ApiErrorException("CHAT_CONTEXT_LIMIT_REACHED") from exc
+                service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
+                try:
+                    await service.prepare_message(
+                        owner_user_id=user.id,
+                        session=session,
+                        history=history,
+                        system_prompt=prompt,
+                        content=body.content,
+                    )
+                except ChatContextLimitReached as exc:
+                    raise ApiErrorException("CHAT_CONTEXT_LIMIT_REACHED") from exc
+            finally:
+                await repositories.chat.release_execution_lease(
+                    owner_user_id=user.id, session_id=session.id, token=token
+                )
         message = await repositories.chat.append_message(
             owner_user_id=user.id,
             message_id=f"message_{uuid4().hex}",

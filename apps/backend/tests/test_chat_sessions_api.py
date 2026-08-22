@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from super_ai.api.app import (
     _schedule_chat_memory_compaction,  # pyright: ignore[reportPrivateUsage]
     create_app,
 )
+from super_ai.memory.database import create_memory_engine, create_memory_session_factory
+from super_ai.memory.sqlite import create_sqlite_memory_repositories
 
 
 @pytest.mark.asyncio
@@ -244,6 +247,39 @@ async def test_automatic_compaction_dedupes_enqueue_for_same_session(
     assert duplicate is None
     assert other_session is not None
     assert other_owner is not None
+
+
+@pytest.mark.asyncio
+async def test_rest_append_respects_execution_lease(
+    migrated_database_url: str,
+) -> None:
+    """回归（问题7）：流式执行中（持租约）REST append 用户消息返回 CHAT_SESSION_BUSY。"""
+    transport = httpx.ASGITransport(app=create_app(database_url=migrated_database_url))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        owner = await _register(client, "lease-owner@example.com", "Lease Owner")
+        headers = _auth_headers(owner["accessToken"])
+        session = (await client.post("/chat/sessions", headers=headers, json={})).json()["data"]
+        engine = create_memory_engine(migrated_database_url)
+        try:
+            repositories = create_sqlite_memory_repositories(
+                create_memory_session_factory(engine)
+            )
+            await repositories.chat.acquire_execution_lease(
+                owner_user_id=owner["user"]["id"],
+                session_id=session["id"],
+                token="external-lease",
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            )
+            response = await client.post(
+                f"/chat/sessions/{session['id']}/messages",
+                headers=headers,
+                json={"role": "user", "content": "hello"},
+            )
+        finally:
+            await engine.dispose()
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CHAT_SESSION_BUSY"
 
 
 async def _register(client: httpx.AsyncClient, email: str, display_name: str) -> dict[str, Any]:

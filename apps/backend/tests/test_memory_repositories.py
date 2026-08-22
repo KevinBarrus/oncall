@@ -5,6 +5,7 @@ import inspect
 from dataclasses import is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from alembic import command
@@ -269,6 +270,62 @@ async def test_archive_rejects_stale_message_set_when_new_messages_appended(
         # 新消息未被误归档，旧摘要也未覆盖新摘要
         assert [message.id for message in active] == ["cas-message-2", "cas-message-3"]
         assert session_after is not None and session_after.memory_summary == '{"summary":"inline"}'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_clear_messages_removes_evidence_and_audits_and_dedupes_evidence(
+    migrated_database_url: str,
+) -> None:
+    """回归（问题8）：clear_messages 清理压缩证据与审计；同 (会话, source_hash) 证据去重。"""
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="clear-evidence"
+        )
+        evidence_repo = cast(Any, repositories.compressed_tool_evidence)
+        evidence = await evidence_repo.create(
+            owner_user_id="user-a",
+            chat_session_id=session.id,
+            tool_name="SearchLog",
+            content="full raw output",
+            source_hash="hash-1",
+        )
+        audits_repo = cast(Any, repositories.tool_call_audits)
+        await audits_repo.create_for_chat_session(
+            owner_user_id="user-a",
+            audit_id="audit-1",
+            chat_session_id=session.id,
+            tool_name="SearchLog",
+            arguments={},
+        )
+        # 去重：同 (会话, source_hash) 返回同一行，不重复写原文
+        duplicate = await evidence_repo.create(
+            owner_user_id="user-a",
+            chat_session_id=session.id,
+            tool_name="SearchLog",
+            content="full raw output",
+            source_hash="hash-1",
+        )
+        assert duplicate.id == evidence.id
+        # 清空会话消息：证据与审计一并清理
+        await repositories.chat.clear_messages(owner_user_id="user-a", session_id=session.id)
+        assert (
+            await evidence_repo.get(
+                owner_user_id="user-a",
+                chat_session_id=session.id,
+                evidence_id=evidence.id,
+            )
+            is None
+        )
+        assert (
+            await audits_repo.list_for_chat_session(
+                owner_user_id="user-a", chat_session_id=session.id
+            )
+            == []
+        )
     finally:
         await engine.dispose()
 
