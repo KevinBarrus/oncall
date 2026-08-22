@@ -14,6 +14,7 @@ describe("中文 AI 工作台状态", () => {
     expect(describeAsyncStatus("succeeded")).toMatchObject({ label: "已完成", tone: "success", active: false });
     expect(describeAsyncStatus("indexed")).toMatchObject({ label: "已索引", tone: "success", active: false });
     expect(describeAsyncStatus("failed")).toMatchObject({ label: "执行失败", tone: "danger", active: false });
+    expect(describeAsyncStatus("timed_out")).toMatchObject({ label: "诊断超时", tone: "danger", active: false });
   });
 
   it("以可访问文本而不是颜色单独表达活动状态", () => {

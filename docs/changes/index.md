@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [map-timed-out-frontend-status](/changes/active/map-timed-out-frontend-status/)
 - [mark-structured-compression-fallback](/changes/active/mark-structured-compression-fallback/)
 - [serialize-memory-compaction-archive](/changes/active/serialize-memory-compaction-archive/)
 - [harden-worker-loop-error-handling](/changes/active/harden-worker-loop-error-handling/)

@@ -20,6 +20,7 @@ const STATUS_DESCRIPTIONS: Readonly<Record<string, AsyncStatusDescription>> = {
   succeeded: { label: "已完成", tone: "success", active: false },
   completed: { label: "已完成", tone: "success", active: false },
   cancelled: { label: "已取消", tone: "neutral", active: false },
+  timed_out: { label: "诊断超时", tone: "danger", active: false },
   ready: { label: "已就绪", tone: "success", active: false },
   degraded: { label: "服务异常", tone: "danger", active: false },
   failed: { label: "执行失败", tone: "danger", active: false },

@@ -47,6 +47,8 @@
 
 - 现状：契约已含 `timed_out`，后端 SSE 与降级报告已落地，但前端 `asyncStatus.ts` 状态映射表缺失，超时诊断历史显示"状态未知"。
 - 方案：`STATUS_DESCRIPTIONS` 增加 `timed_out: { label: "诊断超时", tone: "danger", active: false }`；补前端组件测试。
+- 已完成：`asyncStatus.ts` 增加 `timed_out` 条目（label 诊断超时、tone danger、终态）；`chineseWorkspace.test.ts` 补断言。
+- 验证：`npm run frontend:typecheck` + `npm run frontend:test` = 82 passed（含新增断言）。
 
 ## 问题6的解决方案：异常堆栈文本脱敏（P2，需验证）
 
