@@ -7,8 +7,12 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from starlette.requests import Request
 
-from super_ai.api.app import create_app
+from super_ai.api.app import (
+    _schedule_chat_memory_compaction,  # pyright: ignore[reportPrivateUsage]
+    create_app,
+)
 
 
 @pytest.mark.asyncio
@@ -214,6 +218,32 @@ async def test_manual_memory_operations_return_owner_scoped_background_jobs(
     assert compact_response.status_code == 200
     assert compact_payload["job"]["id"] != mode_payload["job"]["id"]
     assert forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_dedupes_enqueue_for_same_session(
+    migrated_database_url: str,
+) -> None:
+    """回归（问题2）：同一会话已有排队/执行中的压缩 job 时不再重复入队。"""
+    app = create_app(database_url=migrated_database_url)
+    request = Request(scope={"type": "http", "app": app, "server": ("testserver", 80)})
+    first = await _schedule_chat_memory_compaction(
+        request, owner_user_id="user-a", session_id="session-1"
+    )
+    duplicate = await _schedule_chat_memory_compaction(
+        request, owner_user_id="user-a", session_id="session-1"
+    )
+    other_session = await _schedule_chat_memory_compaction(
+        request, owner_user_id="user-a", session_id="session-2"
+    )
+    other_owner = await _schedule_chat_memory_compaction(
+        request, owner_user_id="user-b", session_id="session-1"
+    )
+
+    assert first is not None and first.status == "queued"
+    assert duplicate is None
+    assert other_session is not None
+    assert other_owner is not None
 
 
 async def _register(client: httpx.AsyncClient, email: str, display_name: str) -> dict[str, Any]:

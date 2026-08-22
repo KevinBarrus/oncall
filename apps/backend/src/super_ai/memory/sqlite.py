@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar, cast
 from uuid import uuid4
@@ -445,14 +445,14 @@ class SQLiteChatMemoryRepository:
         *,
         owner_user_id: str,
         session_id: str,
-        message_count: int,
+        message_ids: Collection[str],
         memory_summary: str,
         context_tokens: int,
         last_compacted_at: datetime,
         clear_compaction_error: bool = False,
     ) -> ChatSessionRecord | None:
-        if message_count <= 0:
-            raise ValueError("message_count must be positive")
+        if not message_ids:
+            raise ValueError("message_ids must not be empty")
         async with self._session_factory() as session, session.begin():
             parent = await _find_chat_session(session, owner_user_id, session_id)
             if parent is None:
@@ -466,12 +466,16 @@ class SQLiteChatMemoryRepository:
                             ChatMessageModel.session_id == session_id,
                         )
                         .order_by(ChatMessageModel.created_at.asc(), ChatMessageModel.id.asc())
-                        .limit(message_count)
+                        .limit(len(message_ids))
                     )
                 ).all()
             )
-            if len(rows) != message_count:
-                raise RuntimeError("Compacted chat history no longer matches the active prefix.")
+            # CAS 校验：摘要覆盖期间不得有新消息追加到 active 前缀（新消息只会
+            # append 到末尾，因此前缀 ID 集合必须与本次摘要覆盖集合完全一致）
+            if len(rows) != len(message_ids) or {row.id for row in rows} != set(message_ids):
+                raise RuntimeError(
+                    "Compacted chat history changed since the summary was produced."
+                )
             timestamp = utc_now()
             session.add_all(
                 [

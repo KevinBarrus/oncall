@@ -23,7 +23,10 @@
   - job handler 与 REST append 路径复用 `acquire_execution_lease`（与流式对称）；
   - 或 `archive_compacted_messages` 改为按消息 ID 集合 CAS 归档，ID 不匹配即放弃；
   - `_schedule_chat_memory_compaction` 入队前检查同 resource 已有 queued/running job（去重）。
-- 验证：并发触发"后台压缩 + 内联压缩"的交错测试，断言归档集合与摘要覆盖集合一致。
+- 已完成（采用 CAS 归档 + 入队去重组合）：`archive_compacted_messages` 接口改为 `message_ids` 集合，SQLite 实现事务内校验 active 前缀 ID 集合与摘要覆盖集合完全一致（append-only 前缀校验成立）才归档，不一致抛 RuntimeError 放弃——消除了"归档未被摘要覆盖的新消息"与"旧摘要覆盖新摘要"；`_schedule_chat_memory_compaction` 默认去重（queued/running 跳过），手动 `memory:compact` 端点 `dedupe=False` 总是入队，mode 切换与 70% 自动触发走去重。
+- 说明：未给 REST append / job handler 加执行租约（CAS + 去重已消除错误归档与无谓并发，剩余交错由失败-重试自愈：job 走重试、内联记 last_compaction_error）。
+- 已补充测试：CAS 拒绝陈旧 ID 集（内联先归档 + 新消息补齐场景）且不误删新消息、同会话重复入队返回 None。
+- 验证：`uv run pytest -m "not local_config"` = 224 passed（新增 2 个）；ruff/pyright 全绿。
 
 ## 问题3的解决方案：worker 循环异常防护（P1）
 

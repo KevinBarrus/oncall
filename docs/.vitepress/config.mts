@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "serialize-memory-compaction-archive", link: "/changes/active/serialize-memory-compaction-archive/" },
   { text: "harden-worker-loop-error-handling", link: "/changes/active/harden-worker-loop-error-handling/" },
   { text: "exempt-self-referential-tools-from-compression", link: "/changes/active/exempt-self-referential-tools-from-compression/" },
   { text: "add-coverage-thresholds", link: "/changes/active/add-coverage-thresholds/" },

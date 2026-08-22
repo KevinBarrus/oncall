@@ -1245,7 +1245,7 @@ def create_app(
             system_prompt=prompt,
         )
         job = await _schedule_chat_memory_compaction(
-            request, owner_user_id=user.id, session_id=session.id
+            request, owner_user_id=user.id, session_id=session.id, dedupe=False
         )
         return success_response(
             request,
@@ -2188,8 +2188,20 @@ def _chat_memory_service(request: Request) -> ChatMemoryService:
 
 
 async def _schedule_chat_memory_compaction(
-    request: Request, *, owner_user_id: str, session_id: str
-) -> BackgroundJobRecord:
+    request: Request,
+    *,
+    owner_user_id: str,
+    session_id: str,
+    dedupe: bool = True,
+) -> BackgroundJobRecord | None:
+    if dedupe:
+        existing = await _background_job_repository(request).find_for_resource(
+            owner_user_id=owner_user_id,
+            resource_type="chat_session",
+            resource_id=session_id,
+        )
+        if existing is not None and existing.status in {"queued", "running"}:
+            return None  # 同会话已有排队/执行中的压缩 job，避免重复入队
     job = await _background_job_repository(request).enqueue(
         owner_user_id=owner_user_id,
         job_id=f"job_{uuid4().hex}",

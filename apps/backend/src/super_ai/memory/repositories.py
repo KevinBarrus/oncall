@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -530,13 +530,17 @@ class ChatMemoryRepository(Protocol):
         *,
         owner_user_id: str,
         session_id: str,
-        message_count: int,
+        message_ids: Collection[str],
         memory_summary: str,
         context_tokens: int,
         last_compacted_at: datetime,
         clear_compaction_error: bool = False,
     ) -> ChatSessionRecord | None:
-        """Atomically archive a compacted prefix and update its memory state."""
+        """Atomically archive the compacted message set and update memory state.
+
+        CAS 语义：仅当 active 前缀消息 ID 集合与本次摘要覆盖的 message_ids 完全一致
+        （期间无新消息追加）时才归档，避免并发压缩归档未被摘要覆盖的消息。
+        """
         ...
 
     async def get_message(

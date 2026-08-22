@@ -347,7 +347,7 @@ class ChatMemoryService:
             memory_summary=summary,
             context_tokens=tokens,
             last_compacted_at=datetime.now(timezone.utc),
-            message_count=session.compacted_message_count + len(messages),
+            message_ids=[message.id for message in messages],
             clear_compaction_error=True,
         )
         record_business_metric("chat_compactions")

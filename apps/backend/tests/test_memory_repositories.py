@@ -169,7 +169,7 @@ async def test_chat_repository_archives_compacted_history_without_losing_it(
         archived_session = await chat_repository.archive_compacted_messages(
             owner_user_id="user-a",
             session_id=session.id,
-            message_count=2,
+            message_ids=["archived-message-1", "archived-message-2"],
             memory_summary='{"summary":"first two messages"}',
             context_tokens=7,
             last_compacted_at=created_at + timedelta(minutes=4),
@@ -212,6 +212,65 @@ async def test_chat_repository_archives_compacted_history_without_losing_it(
     assert other_owner_messages == []
     assert cleared_messages == 3
     assert remaining_messages == []
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_stale_message_set_when_new_messages_appended(
+    migrated_database_url: str,
+) -> None:
+    """回归（问题2）：摘要覆盖期间有新消息追加时，CAS 归档必须放弃且不误删。"""
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        chat_repository = SQLiteChatMemoryRepository(create_memory_session_factory(engine))
+        session = await chat_repository.create_session(
+            owner_user_id="user-a", session_id="archive-cas"
+        )
+        for index in range(2):
+            await chat_repository.append_message(
+                owner_user_id="user-a",
+                message_id=f"cas-message-{index}",
+                session_id=session.id,
+                role="user",
+                content=f"message {index}",
+            )
+        # 模拟并发：内联压缩先归档了 cas-message-0/1，随后新消息追加补齐行数
+        await chat_repository.archive_compacted_messages(
+            owner_user_id="user-a",
+            session_id=session.id,
+            message_ids=["cas-message-0", "cas-message-1"],
+            memory_summary='{"summary":"inline"}',
+            context_tokens=3,
+            last_compacted_at=datetime.now(timezone.utc),
+        )
+        for index in range(2, 4):
+            await chat_repository.append_message(
+                owner_user_id="user-a",
+                message_id=f"cas-message-{index}",
+                session_id=session.id,
+                role="user",
+                content=f"message {index}",
+            )
+        # 后台任务用旧快照的 ID 集归档：这些 ID 已不在 active 表 → 必须放弃
+        with pytest.raises(RuntimeError):
+            await chat_repository.archive_compacted_messages(
+                owner_user_id="user-a",
+                session_id=session.id,
+                message_ids=["cas-message-0", "cas-message-1"],
+                memory_summary='{"summary":"stale"}',
+                context_tokens=3,
+                last_compacted_at=datetime.now(timezone.utc),
+            )
+        active = await chat_repository.list_active_messages(
+            owner_user_id="user-a", session_id=session.id
+        )
+        session_after = await chat_repository.get_session(
+            owner_user_id="user-a", session_id=session.id
+        )
+        # 新消息未被误归档，旧摘要也未覆盖新摘要
+        assert [message.id for message in active] == ["cas-message-2", "cas-message-3"]
+        assert session_after is not None and session_after.memory_summary == '{"summary":"inline"}'
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
