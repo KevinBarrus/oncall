@@ -309,6 +309,35 @@ async def test_streaming_chat_emits_sse_events_and_persists_messages(
 
 
 @pytest.mark.asyncio
+async def test_stream_failure_persists_partial_answer_with_interrupted_flag(
+    migrated_database_url: str,
+) -> None:
+    """回归（问题13）：流中断时持久化已生成的 partial 回答（带 interrupted 标记）。"""
+    runner = FakeChatAgentRunner(
+        events=[ChatAgentContentDelta("部分"), ChatAgentContentDelta("回答")],
+        error=RuntimeError("model crashed"),
+    )
+    app = create_app(database_url=migrated_database_url, chat_agent_runner=runner)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        user = await _register(client, "interrupt@example.com", "Interrupt User")
+        headers = _auth_headers(user["accessToken"])
+        session = (await client.post("/chat/sessions", headers=headers, json={})).json()["data"]
+        stream = await client.post(
+            f"/chat/sessions/{session['id']}/messages:stream",
+            headers=headers,
+            json={"content": "继续"},
+        )
+        assert "SYSTEM_INTERNAL_ERROR" in stream.text
+        messages = (await client.get(f"/chat/sessions/{session['id']}", headers=headers)).json()[
+            "data"
+        ]["messages"]
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "部分回答"
+        assert messages[-1]["metadata"]["interrupted"] is True
+
+
+@pytest.mark.asyncio
 async def test_same_session_chat_requests_are_serialized() -> None:
     state = {
         "started": asyncio.Event(),
@@ -683,7 +712,7 @@ async def test_streaming_chat_rejects_cross_tenant_session_before_agent_runs(
 
 
 @pytest.mark.asyncio
-async def test_streaming_chat_emits_safe_error_without_partial_assistant_message(
+async def test_streaming_chat_emits_safe_error_and_persists_partial_assistant_message(
     migrated_database_url: str,
 ) -> None:
     runner = FakeChatAgentRunner(
@@ -711,7 +740,11 @@ async def test_streaming_chat_emits_safe_error_without_partial_assistant_message
     assert "".join(event["data"]["delta"] for event in events[:-1]) == "partial secret"
     assert events[-1]["event"] == "error"
     assert events[-1]["data"]["error"]["code"] == "SYSTEM_INTERNAL_ERROR"
-    assert [message["role"] for message in detail_response.json()["data"]["messages"]] == ["user"]
+    messages = detail_response.json()["data"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[-1]["content"] == "partial secret"
+    assert messages[-1]["metadata"]["interrupted"] is True
+    assert "sk-secret" not in detail_response.text
 
 
 @pytest.mark.asyncio

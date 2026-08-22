@@ -394,6 +394,14 @@ class ChatStreamingService:
                 sessionId=session.id,
                 durationMs=elapsed_ms(started_at),
             )
+            await self._persist_interrupted_answer(
+                owner_user_id=owner_user_id,
+                session=session,
+                answer_parts=answer_parts,
+                reasoning_parts=reasoning_parts,
+                tool_call_ids=tool_call_ids,
+                citations=citations,
+            )
             yield _error_event("CHAT_CONTEXT_LIMIT_REACHED")
             return
         except Exception as exc:
@@ -404,8 +412,51 @@ class ChatStreamingService:
                 errorCategory=exc.__class__.__name__,
                 durationMs=elapsed_ms(started_at),
             )
+            await self._persist_interrupted_answer(
+                owner_user_id=owner_user_id,
+                session=session,
+                answer_parts=answer_parts,
+                reasoning_parts=reasoning_parts,
+                tool_call_ids=tool_call_ids,
+                citations=citations,
+            )
             yield _error_event("SYSTEM_INTERNAL_ERROR")
             return
+
+    async def _persist_interrupted_answer(
+        self,
+        *,
+        owner_user_id: str,
+        session: ChatSessionRecord,
+        answer_parts: list[str],
+        reasoning_parts: list[str],
+        tool_call_ids: list[str],
+        citations: list[dict[str, object]],
+    ) -> None:
+        """流中断时持久化已生成的 partial 回答（带 interrupted 标记）。"""
+        partial = "".join(answer_parts).strip()
+        if not partial:
+            return
+        try:
+            await self._repositories.chat.append_message(
+                owner_user_id=owner_user_id,
+                message_id=f"message_{uuid4().hex}",
+                session_id=session.id,
+                role="assistant",
+                content=partial,
+                metadata={
+                    "citations": citations,
+                    "reasoning": reasoning_parts,
+                    "toolCallIds": tool_call_ids,
+                    "interrupted": True,
+                },
+            )
+        except Exception:
+            emit_event(
+                logger,
+                "agent.chat.partial_persist_failed",
+                sessionId=session.id,
+            )
 
     async def build_system_prompt(self, *, owner_user_id: str) -> str:
         system_prompt, _ = await self.build_agent_configuration(owner_user_id=owner_user_id)

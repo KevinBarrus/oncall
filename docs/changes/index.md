@@ -6,6 +6,8 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [persist-interrupted-chat-answers](/changes/active/persist-interrupted-chat-answers/)
+- [merge-ci-pytest-coverage](/changes/active/merge-ci-pytest-coverage/)
 - [drop-compacted-message-count-column](/changes/active/drop-compacted-message-count-column/)
 - [cache-token-counter-model](/changes/active/cache-token-counter-model/)
 - [record-job-compaction-failures](/changes/active/record-job-compaction-failures/)

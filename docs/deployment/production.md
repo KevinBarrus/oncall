@@ -144,6 +144,8 @@ sqlite3 var/memory.sqlite3 ".backup '/backup/oncall-$(date +%F).sqlite3'"
 - 指标采集：将 `/metrics` 接入 Prometheus（`scrape_interval` 建议 ≥ 15s）
 - 告警：项目自带 Alertmanager（`infra/compose.yaml`），可用于本地 active-alert 演示；生产告警源按你的监控栈配置
 
+> 安全边界：运维端点（`/health`、`/ready`、`/metrics`、`/config/check`、`/health/mcp`）不要求认证，返回基础设施拓扑与指标（不含密钥值）。**不要把运维端点直接暴露到公网**：建议在 Nginx 层限制来源 IP/内网网段，或仅允许监控/探活目标访问；`/config/check` 仅供本机排障使用，公网必须禁用。
+
 ## 7. 日志收集
 
 - 后端结构化日志输出到 stdout（super_ai 命名空间，已对敏感键值脱敏），进程日志同时写入 `apps/backend/var/`
@@ -175,4 +177,5 @@ chmod 600 apps/backend/var/memory.sqlite3
 - [ ] Nginx SSE 路径未开 `proxy_buffering`，`proxy_read_timeout` ≥ 3600s
 - [ ] SQLite 备份任务已配置并验证恢复
 - [ ] `/metrics` 可被监控栈抓取
+- [ ] 运维端点（/health、/ready、/metrics、/config/check、/health/mcp）未直接暴露公网，已在 Nginx/防火墙限制来源
 - [ ] 系统防火墙仅暴露 80/443 与必要端口

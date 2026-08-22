@@ -2,6 +2,8 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "persist-interrupted-chat-answers", link: "/changes/active/persist-interrupted-chat-answers/" },
+  { text: "merge-ci-pytest-coverage", link: "/changes/active/merge-ci-pytest-coverage/" },
   { text: "drop-compacted-message-count-column", link: "/changes/active/drop-compacted-message-count-column/" },
   { text: "cache-token-counter-model", link: "/changes/active/cache-token-counter-model/" },
   { text: "record-job-compaction-failures", link: "/changes/active/record-job-compaction-failures/" },

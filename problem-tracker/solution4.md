@@ -105,7 +105,10 @@
 
 - 现状：Agent 事件循环异常时 `answer_parts` 丢弃，用户消息在、回答无；前端有"回答流意外中断"检测。
 - 方案（可选）：异常路径若 `answer_parts` 非空，持久化一条带 `interrupted` 标记的 assistant 消息再发 error 事件。
-- 说明：属生产体验取舍，当前不实施时应在文档记录。
+- 已完成：新增 `_persist_interrupted_answer`（join 非空才持久化，metadata 含 citations/reasoning/toolCallIds + `interrupted: True`，持久化自身失败仅 emit 事件不掩盖原始错误）；上下文超限与通用异常两个分支接入；契约 `ChatMessageMetadata` 加可选 `interrupted?: boolean`。
+- 已更新测试：既有 safe error 测试改为断言 partial 回答已持久化（带标记）；新增中断场景回归测试。
+- 说明：前端 interrupted 展示未实现（数据完整性为本问题核心，前端已有中断提示），与 problem4 确认项结论一致。
+- 验证：`uv run pytest -m "not local_config"` = 231 passed（新增 1 个）；契约 25 passed；前端 82 passed；ruff/pyright 全绿。
 
 ## 问题14的解决方案：chat-memory 规格与实现对齐（P2，文档）
 
@@ -118,4 +121,6 @@
 
 - 现状：CI 后端 job 对同一套件跑两遍（裸跑 + 带 --cov 重跑）；运维端点（/health、/metrics、/ready、/config/check、/health/mcp）无认证，返回基础设施拓扑与指标（不含密钥值）。
 - 方案：CI 合并为一次带 `--cov` 的运行；部署文档明确"运维端点不对外暴露或在 Nginx 层限制来源 IP"。
-- 说明：单实例 127.0.0.1 绑定下风险低，属部署边界确认项。
+- 已完成：CI 两个 pytest 步骤合并为单一步骤（`--cov --cov-fail-under=80` + `check_coverage.py`）；部署文档监控节补运维端点安全边界说明，上线检查清单补对应项。
+- 说明：运维端点未加认证（监控/探活需无凭据访问，单实例本地绑定风险低，属部署边界而非代码缺陷，与 problem4 结论一致）。
+- 验证：CI 全绿（合并后单次运行）。
