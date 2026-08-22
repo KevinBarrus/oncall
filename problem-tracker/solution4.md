@@ -40,6 +40,8 @@
 
 - 现状：仅字符串输出路径在 `_compression` 加 `compressionFailed`；`maybe_compress_structured_tool_output`（知识检索主路径）缺失。
 - 方案：结构化路径复用 `tool_output_compression_metadata` 并在 `mode == "sampled_fallback"` 时补 `compressionFailed: True`；补降级路径测试（现有测试用 FakeProvider 不触发降级）。
+- 已完成：结构化路径 `_compression` 改为复用 `tool_output_compression_metadata`（与字符串路径一致），sampled_fallback 时补 `compressionFailed: True`；新增回归测试（FailingProvider 触发降级断言标记，另断言 llm_summary 成功路径不带标记）。
+- 验证：`uv run pytest -m "not local_config"` = 225 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题5的解决方案：前端 timed_out 状态标签（P2，回归：solution3 问题7 配套）
 

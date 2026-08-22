@@ -349,6 +349,33 @@ async def test_structured_tool_compression_keeps_machine_readable_metadata() -> 
 
 
 @pytest.mark.asyncio
+async def test_structured_tool_compression_fallback_marks_failure() -> None:
+    """回归（问题4）：结构化路径 sampled_fallback 必须带 compressionFailed 标记。"""
+    result = await maybe_compress_structured_tool_output(
+        {"records": [{"message": "timeout"}] * 2_000},
+        tool_name="knowledge_retrieval",
+        llm_provider=cast(LlmProvider, FailingProvider()),
+    )
+    assert isinstance(result, dict)
+    compression = result["_compression"]
+    assert isinstance(compression, dict)
+    assert compression["mode"] == "sampled_fallback"
+    assert compression["compressionFailed"] is True
+    assert compression["sourceHash"]
+    # llm_summary 成功路径不标记失败
+    ok = await maybe_compress_structured_tool_output(
+        {"records": [{"message": "timeout"}] * 2_000},
+        tool_name="knowledge_retrieval",
+        llm_provider=cast(LlmProvider, FakeProvider()),
+    )
+    assert isinstance(ok, dict)
+    ok_compression = ok["_compression"]
+    assert isinstance(ok_compression, dict)
+    assert ok_compression["mode"] == "llm_summary"
+    assert "compressionFailed" not in ok_compression
+
+
+@pytest.mark.asyncio
 async def test_read_evidence_tool_skips_compression_and_returns_original(
     migrated_database_url: str,
 ) -> None:

@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [mark-structured-compression-fallback](/changes/active/mark-structured-compression-fallback/)
 - [serialize-memory-compaction-archive](/changes/active/serialize-memory-compaction-archive/)
 - [harden-worker-loop-error-handling](/changes/active/harden-worker-loop-error-handling/)
 - [exempt-self-referential-tools-from-compression](/changes/active/exempt-self-referential-tools-from-compression/)

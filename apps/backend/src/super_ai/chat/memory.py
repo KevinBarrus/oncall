@@ -431,15 +431,13 @@ async def maybe_compress_structured_tool_output(
         threshold_tokens=threshold_tokens,
     )
     mode = "llm_summary" if compressed.startswith("[compressed]") else "sampled_fallback"
+    metadata = tool_output_compression_metadata(encoded, compressed, mode=mode)
+    if mode == "sampled_fallback":
+        metadata["compressionFailed"] = True
     return {
         "content": compressed.removeprefix("[compressed] "),
         "preserved": _preserve_structured_fields(value),
-        "_compression": {
-            "mode": mode,
-            "sourceHash": sha256(encoded.encode("utf-8")).hexdigest(),
-            "originalChars": len(encoded),
-            "compressedChars": len(compressed),
-        },
+        "_compression": metadata,
     }
 
 
