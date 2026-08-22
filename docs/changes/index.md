@@ -6,6 +6,8 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [drop-compacted-message-count-column](/changes/active/drop-compacted-message-count-column/)
+- [cache-token-counter-model](/changes/active/cache-token-counter-model/)
 - [record-job-compaction-failures](/changes/active/record-job-compaction-failures/)
 - [isolate-evidence-persist-failures](/changes/active/isolate-evidence-persist-failures/)
 - [serialize-rest-append-with-lease](/changes/active/serialize-rest-append-with-lease/)

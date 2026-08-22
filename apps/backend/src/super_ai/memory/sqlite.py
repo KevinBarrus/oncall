@@ -191,7 +191,6 @@ class SQLiteChatMemoryRepository:
         session_id: str,
         memory_mode: str | None = None,
         memory_summary: str | None = None,
-        compacted_message_count: int | None = None,
         context_tokens: int | None = None,
         last_compacted_at: datetime | None = None,
         last_compaction_error: str | None = None,
@@ -209,14 +208,11 @@ class SQLiteChatMemoryRepository:
                 row.memory_mode = memory_mode
             if clear_compaction:
                 row.memory_summary = None
-                row.compacted_message_count = 0
                 row.context_tokens = 0
                 row.last_compacted_at = None
             else:
                 if memory_summary is not None:
                     row.memory_summary = memory_summary
-                if compacted_message_count is not None:
-                    row.compacted_message_count = compacted_message_count
                 if context_tokens is not None:
                     row.context_tokens = context_tokens
                 if last_compacted_at is not None:
@@ -332,7 +328,6 @@ class SQLiteChatMemoryRepository:
             )
             parent.updated_at = timestamp
             parent.memory_summary = None
-            parent.compacted_message_count = 0
             parent.context_tokens = 0
             parent.last_compacted_at = None
             await session.commit()
@@ -513,7 +508,6 @@ class SQLiteChatMemoryRepository:
                 )
             )
             parent.memory_summary = memory_summary
-            parent.compacted_message_count = 0
             parent.context_tokens = context_tokens
             parent.last_compacted_at = last_compacted_at
             if clear_compaction_error:
@@ -2347,7 +2341,6 @@ def _chat_session_record(row: ChatSessionModel) -> ChatSessionRecord:
         updated_at=_ensure_utc(row.updated_at),
         memory_mode=row.memory_mode,
         memory_summary=row.memory_summary,
-        compacted_message_count=row.compacted_message_count,
         context_tokens=row.context_tokens,
         last_compacted_at=(
             _ensure_utc(row.last_compacted_at) if row.last_compacted_at is not None else None

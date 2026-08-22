@@ -818,7 +818,6 @@ function _chatSession(overrides: Partial<ChatSessionSummary> = {}): ChatSessionS
       contextTokens: 1200,
       contextWindowTokens: 131072,
       contextUsagePercent: 0.9,
-      compactedMessageCount: 0,
       lastCompactedAt: null,
       lastCompactionError: null,
       lastCompactionFailedAt: null,

@@ -1225,7 +1225,6 @@ export const OPENAPI_CONTRACT = {
           "contextTokens",
           "contextWindowTokens",
           "contextUsagePercent",
-          "compactedMessageCount",
           "lastCompactedAt",
           "canCompact"
         ],
@@ -1234,7 +1233,6 @@ export const OPENAPI_CONTRACT = {
           contextTokens: { type: "integer" },
           contextWindowTokens: { type: "integer" },
           contextUsagePercent: { type: "number" },
-          compactedMessageCount: { type: "integer" },
           lastCompactedAt: { type: ["string", "null"] },
           canCompact: { type: "boolean" }
         }

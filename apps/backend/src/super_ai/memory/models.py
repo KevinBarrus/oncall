@@ -286,7 +286,6 @@ class ChatSessionModel(Base):
     title: Mapped[str | None] = mapped_column(String(240), nullable=True)
     memory_mode: Mapped[str] = mapped_column(String(40), nullable=False, default="every_30_turns")
     memory_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    compacted_message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     context_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_compacted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

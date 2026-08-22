@@ -88,6 +88,7 @@ class QwenOpenAIProvider:
         self._readiness_lock = asyncio.Lock()
         self._readiness_result: LlmReadinessResult | None = None
         self._readiness_checked_at = 0.0
+        self._token_counter_model: ChatModel | None = None
 
     @property
     def config(self) -> LlmProviderConfig:
@@ -100,7 +101,10 @@ class QwenOpenAIProvider:
 
     def count_tokens(self, text: str) -> int:
         """Count text with the configured model when it exposes a tokenizer."""
-        model = self.create_chat_model()
+        # 缓存计数用模型，避免每次调用重建（含 tokenizer 初始化开销）
+        if self._token_counter_model is None:
+            self._token_counter_model = self.create_chat_model()
+        model = self._token_counter_model
         counter = cast(Callable[[str], int] | None, getattr(model, "get_num_tokens", None))
         if not callable(counter):
             raise NotImplementedError("The configured chat model has no token counter.")

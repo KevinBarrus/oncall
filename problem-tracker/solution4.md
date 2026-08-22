@@ -84,13 +84,15 @@
 
 - 现状：`count_tokens` 每次调用新建 ChatModel，压缩选段对前缀逐条估算，长会话 O(n²) 放大。
 - 方案：provider 缓存 tokenizer/计数器（惰性创建一次），`create_chat_model` 与 token 计数解耦。
-- 验证：长历史压缩耗时对比（基准前后）。
+- 已完成：`QwenOpenAIProvider` 新增 `_token_counter_model` 惰性缓存（首次 `count_tokens` 创建一次并复用），消除压缩选段的重复模型构造开销；tokenizer 无状态只读，asyncio 单线程下无锁安全。
+- 验证：`uv run pytest -m "not local_config"` = 230 passed；ruff/pyright 全绿。
 
 ## 问题11的解决方案：compacted_message_count 死字段清理（P2）
 
 - 现状：归档表方案落地后该字段恒为 0（archive/clear 均置 0），契约暴露恒 0、前端未用，相关切片/算式误导维护者（并为问题2 的并发算式埋坑）。
 - 方案：删字段或明确恒 0 语义并清理相关算式（需迁移与契约同步）。
-- 验证：迁移回滚测试覆盖字段删除。
+- 已完成（删字段）：迁移 `202608210003` drop column（downgrade 补回默认值，全链回滚测试通过）；ORM/record/update_memory_state 参数/archive/clear/payload 全链路删除；`memory.py` 三处 `history[compacted_message_count:]` 切片改为直接使用 history（归档后 active 即未压缩消息）；契约 `chat.ts`/`openapi.ts` 删除 `compactedMessageCount`；前后端测试清理（后端 6 处、前端 3 处）。
+- 验证：`uv run pytest -m "not local_config"` = 230 passed + 迁移回滚测试；契约 25 passed；前端 82 passed；ruff/pyright 全绿。
 
 ## 问题12的解决方案：evidence 持久化失败不转工具失败（P2）
 

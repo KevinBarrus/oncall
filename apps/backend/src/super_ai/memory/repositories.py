@@ -29,7 +29,6 @@ class ChatSessionRecord:
     updated_at: datetime
     memory_mode: ChatMemoryMode = "every_30_turns"
     memory_summary: str | None = None
-    compacted_message_count: int = 0
     context_tokens: int = 0
     last_compacted_at: datetime | None = None
     last_compaction_error: str | None = None
@@ -442,7 +441,6 @@ class ChatMemoryRepository(Protocol):
         session_id: str,
         memory_mode: ChatMemoryMode | None = None,
         memory_summary: str | None = None,
-        compacted_message_count: int | None = None,
         context_tokens: int | None = None,
         last_compacted_at: datetime | None = None,
         last_compaction_error: str | None = None,

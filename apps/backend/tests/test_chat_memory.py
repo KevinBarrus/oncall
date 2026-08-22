@@ -582,7 +582,6 @@ async def test_thirty_turn_mode_defers_compaction_without_deleting_history(
 
     assert provider.model.inputs == []
     assert scheduled == [("user-a", session.id)]
-    assert prepared.session.compacted_message_count == 0
     assert prepared.session.memory_summary is None
     assert len(prepared.messages) == 61
     assert len(persisted) == 60
@@ -658,9 +657,7 @@ async def test_context_threshold_and_manual_mode_are_session_scoped(
         await engine.dispose()
 
     assert threshold_result.session.memory_mode == "context_70_percent"
-    assert threshold_result.session.compacted_message_count == 0
     assert manual_result.memory_mode == "manual"
-    assert manual_result.compacted_message_count == 0
     assert active_threshold_history == []
     assert [message.id for message in complete_threshold_history] == ["message-chat-threshold"]
     assert len(provider.model.inputs) == 1
@@ -707,7 +704,6 @@ async def test_failed_background_compaction_preserves_existing_memory(
 
     assert persisted is not None
     assert persisted.memory_summary is None
-    assert persisted.compacted_message_count == 0
 
 
 @pytest.mark.asyncio
@@ -751,7 +747,6 @@ async def test_fabricated_memory_rejected_without_overwriting_existing(
 
     assert persisted is not None
     assert persisted.memory_summary is None
-    assert persisted.compacted_message_count == 0
 
 
 @pytest.mark.asyncio

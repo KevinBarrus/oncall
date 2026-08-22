@@ -135,7 +135,8 @@ class ChatMemoryService:
         content: str,
     ) -> PreparedChatContext:
         current = session
-        uncompressed = history[current.compacted_message_count :]
+        # 归档后 active 历史即未压缩消息，无需按压缩边界切片
+        uncompressed = history
         candidate = _candidate_user_message(current, owner_user_id, content)
         candidate_messages = [*uncompressed, candidate]
         candidate_tokens = estimate_context_tokens(
@@ -233,7 +234,7 @@ class ChatMemoryService:
         system_prompt: str,
         timeout_seconds: float | None = None,
     ) -> ChatSessionRecord:
-        uncompressed = history[session.compacted_message_count :]
+        uncompressed = history
         compactable = _select_messages_for_compaction(
             messages=uncompressed,
             system_prompt=system_prompt,
@@ -264,7 +265,7 @@ class ChatMemoryService:
         tokens = estimate_context_tokens(
             system_prompt=system_prompt,
             memory_summary=session.memory_summary,
-            messages=history[session.compacted_message_count :],
+            messages=history,
             llm_provider=self._llm_provider,
         )
         updated = await self._repositories.chat.update_memory_state(
@@ -558,7 +559,6 @@ def memory_payload(session: ChatSessionRecord, context_window_tokens: int) -> di
         "contextTokens": session.context_tokens,
         "contextWindowTokens": context_window_tokens,
         "contextUsagePercent": _usage_percent(session.context_tokens, context_window_tokens),
-        "compactedMessageCount": session.compacted_message_count,
         "lastCompactedAt": (
             session.last_compacted_at.isoformat() if session.last_compacted_at is not None else None
         ),

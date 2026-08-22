@@ -198,7 +198,6 @@ async def test_chat_repository_archives_compacted_history_without_losing_it(
 
     assert archived_session is not None
     assert archived_session.memory_summary == '{"summary":"first two messages"}'
-    assert archived_session.compacted_message_count == 0
     assert [message.id for message in active_messages] == ["archived-message-3"]
     assert [message.id for message in all_messages] == [
         "archived-message-1",

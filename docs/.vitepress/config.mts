@@ -2,6 +2,8 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "drop-compacted-message-count-column", link: "/changes/active/drop-compacted-message-count-column/" },
+  { text: "cache-token-counter-model", link: "/changes/active/cache-token-counter-model/" },
   { text: "record-job-compaction-failures", link: "/changes/active/record-job-compaction-failures/" },
   { text: "isolate-evidence-persist-failures", link: "/changes/active/isolate-evidence-persist-failures/" },
   { text: "serialize-rest-append-with-lease", link: "/changes/active/serialize-rest-append-with-lease/" },
