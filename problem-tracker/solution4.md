@@ -29,7 +29,9 @@
 
 - 现状：`_worker_loop` 裸 while，`_claim_available`/`_execute` 的仓储调用异常会终止 worker task，后台处理静默停摆直到重启。
 - 方案：`_worker_loop` 每轮包 try/except，异常时 emit `background.worker.error` 事件并 sleep 退避后继续；`_execute` 的 finally 分支（`mark_*` 失败）同样兜底，只记日志不再向上抛。
-- 验证：注入仓储抛错桩，断言 worker 存活并继续领取后续任务。
+- 已完成：`_worker_loop` 双 try/except（claim 与 execute 各一层），失败 emit `background.worker.error`（含 errorCategory + 脱敏 error）+ 指数退避（2/4/8/16/30s 封顶，成功重置）；`_execute` 三个状态记账点（mark_succeeded/mark_cancelled/handle_failure）各自兜底只 emit 事件，`completed/cancelled/failed` 状态事件仅在持久化成功时发出；记账失败后由租约过期 → `claim_next` 自然重取自愈。
+- 已补充测试：claim_next 抛错存活、mark_succeeded 抛错存活（job 走租约重取）、handler 异常 + handle_failure 抛错存活——三者均验证 worker 继续处理后续 job。
+- 验证：`uv run pytest -m "not local_config"` = 222 passed（新增 3 个）；ruff/pyright 全绿。
 
 ## 问题4的解决方案：结构化压缩降级标记（P2，回归：solution3 问题3 部分）
 

@@ -96,12 +96,39 @@ class BackgroundJobRuntime:
 
     async def _worker_loop(self, index: int) -> None:
         worker_id = f"{self._runtime_id}:{index}"
+        consecutive_failures = 0
         while not self._stopping.is_set():
-            job = await self._claim_available(worker_id)
+            try:
+                job = await self._claim_available(worker_id)
+            except Exception as exc:
+                consecutive_failures += 1
+                emit_event(
+                    logger,
+                    "background.worker.error",
+                    workerId=worker_id,
+                    errorCategory=exc.__class__.__name__,
+                    error=_safe_error(exc),
+                )
+                await asyncio.sleep(_worker_backoff(consecutive_failures))
+                continue
             if job is None:
+                consecutive_failures = 0
                 await asyncio.sleep(self._poll_seconds)
                 continue
-            await self._execute(job, worker_id)
+            try:
+                await self._execute(job, worker_id)
+            except Exception as exc:
+                consecutive_failures += 1
+                emit_event(
+                    logger,
+                    "background.worker.error",
+                    workerId=worker_id,
+                    errorCategory=exc.__class__.__name__,
+                    error=_safe_error(exc),
+                )
+                await asyncio.sleep(_worker_backoff(consecutive_failures))
+                continue
+            consecutive_failures = 0
 
     async def _claim_available(self, worker_id: str) -> BackgroundJobRecord | None:
         """Claim the next job whose kind still has a free concurrency slot."""
@@ -150,16 +177,36 @@ class BackgroundJobRuntime:
             await asyncio.wait_for(handler(context), timeout=job.timeout_seconds)
             await context.raise_if_cancelled()
         except JobCancelled:
-            await self._repository.mark_cancelled(job_id=job.id, worker_id=worker_id)
-            emit_event(logger, "background.job.cancelled", jobId=job.id, kind=job.kind)
+            try:
+                await self._repository.mark_cancelled(job_id=job.id, worker_id=worker_id)
+            except Exception as persist_exc:
+                emit_event(
+                    logger,
+                    "background.worker.error",
+                    workerId=worker_id,
+                    errorCategory=persist_exc.__class__.__name__,
+                    error=f"mark_cancelled failed: {_safe_error(persist_exc)}",
+                )
+            else:
+                emit_event(logger, "background.job.cancelled", jobId=job.id, kind=job.kind)
         except Exception as exc:
             retry_at = _utc_now() + timedelta(seconds=min(30, 2**job.attempt))
-            updated = await self._repository.handle_failure(
-                job_id=job.id,
-                worker_id=worker_id,
-                error_message=_safe_error(exc),
-                retry_at=retry_at,
-            )
+            try:
+                updated = await self._repository.handle_failure(
+                    job_id=job.id,
+                    worker_id=worker_id,
+                    error_message=_safe_error(exc),
+                    retry_at=retry_at,
+                )
+            except Exception as persist_exc:
+                updated = None
+                emit_event(
+                    logger,
+                    "background.worker.error",
+                    workerId=worker_id,
+                    errorCategory=persist_exc.__class__.__name__,
+                    error=f"handle_failure failed: {_safe_error(persist_exc)}",
+                )
             emit_event(
                 logger,
                 "background.job.failed",
@@ -169,8 +216,18 @@ class BackgroundJobRuntime:
                 errorCategory=exc.__class__.__name__,
             )
         else:
-            await self._repository.mark_succeeded(job_id=job.id, worker_id=worker_id)
-            emit_event(logger, "background.job.completed", jobId=job.id, kind=job.kind)
+            try:
+                await self._repository.mark_succeeded(job_id=job.id, worker_id=worker_id)
+            except Exception as persist_exc:
+                emit_event(
+                    logger,
+                    "background.worker.error",
+                    workerId=worker_id,
+                    errorCategory=persist_exc.__class__.__name__,
+                    error=f"mark_succeeded failed: {_safe_error(persist_exc)}",
+                )
+            else:
+                emit_event(logger, "background.job.completed", jobId=job.id, kind=job.kind)
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
@@ -194,6 +251,11 @@ def _safe_error(error: Exception) -> str:
         return "Background job timed out."
     text = str(error).strip()
     return (text or error.__class__.__name__)[:1000]
+
+
+def _worker_backoff(consecutive_failures: int) -> float:
+    """Exponential backoff capped at 30s for worker-loop failures."""
+    return min(30.0, 2.0**min(consecutive_failures, 5))
 
 
 def _utc_now() -> datetime:

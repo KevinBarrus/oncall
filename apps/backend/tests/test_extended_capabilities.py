@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,11 @@ from super_ai.vector_store import MilvusHealthCheckResult
 class FakeVectorStore:
     def health_check(self) -> MilvusHealthCheckResult:
         return MilvusHealthCheckResult(True, "http://milvus.test", "chunks", 1.0)
+
+
+def _fast_worker_backoff(_failures: int) -> float:
+    """测试用：把 worker 退避缩短，避免拖慢用例。"""
+    return 0.01
 
 
 @pytest.mark.asyncio
@@ -153,6 +159,185 @@ async def test_background_runtime_enforces_per_kind_concurrency_limit(
 
     assert peak["slow"] == 1
     assert peak["fast"] == 1
+
+
+@pytest.mark.asyncio
+async def test_background_worker_survives_claim_error_and_keeps_working(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（问题3）：claim_next 抛瞬时 DB 错误不得终止 worker 循环。"""
+    monkeypatch.setattr("super_ai.jobs.runtime._worker_backoff", _fast_worker_backoff)
+    engine = create_memory_engine(migrated_database_url)
+    repository = SQLiteBackgroundJobRepository(create_memory_session_factory(engine))
+    handled: list[str] = []
+
+    async def handler(context: Any) -> None:
+        handled.append(context.job.id)
+
+    runtime = BackgroundJobRuntime(repository, concurrency=1, poll_seconds=0.01)
+    runtime.register("test", handler)
+
+    real_claim_next = repository.claim_next
+    calls = {"n": 0}
+
+    async def flaky_claim_next(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return await real_claim_next(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "claim_next", flaky_claim_next)
+    try:
+        job = await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-1",
+            kind="test",
+            resource_type="test-resource",
+            resource_id="resource-1",
+        )
+        await runtime.start()
+        await _wait_for_job(repository, "user-a", job.id, "succeeded")
+        assert calls["n"] >= 2
+        assert handled == ["job-1"]
+        # worker 存活：第二个 job 仍能被处理
+        job2 = await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-2",
+            kind="test",
+            resource_type="test-resource",
+            resource_id="resource-2",
+        )
+        await _wait_for_job(repository, "user-a", job2.id, "succeeded")
+        assert handled == ["job-1", "job-2"]
+    finally:
+        await runtime.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_background_worker_survives_mark_succeeded_error(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（问题3）：mark_succeeded 抛错不得冒泡终止 worker。"""
+    monkeypatch.setattr("super_ai.jobs.runtime._worker_backoff", _fast_worker_backoff)
+    engine = create_memory_engine(migrated_database_url)
+    repository = SQLiteBackgroundJobRepository(create_memory_session_factory(engine))
+    handled: list[str] = []
+
+    async def handler(context: Any) -> None:
+        handled.append(context.job.id)
+
+    runtime = BackgroundJobRuntime(repository, concurrency=1, poll_seconds=0.01)
+    runtime.register("test", handler)
+
+    real_mark_succeeded = repository.mark_succeeded
+    failed_jobs: set[str] = set()
+
+    async def flaky_mark_succeeded(**kwargs: Any) -> Any:
+        job_id = str(kwargs["job_id"])
+        if job_id == "job-1":
+            failed_jobs.add(job_id)
+            raise sqlite3.OperationalError("database is locked")
+        return await real_mark_succeeded(**kwargs)
+
+    monkeypatch.setattr(repository, "mark_succeeded", flaky_mark_succeeded)
+    try:
+        job = await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-1",
+            kind="test",
+            resource_type="test-resource",
+            resource_id="resource-1",
+            max_attempts=1,
+        )
+        await runtime.start()
+        # job-1 完成但 mark 失败：等 job 因租约过期被重新领取（max_attempts=1 走失败）
+        for _ in range(200):
+            current = await repository.get(owner_user_id="user-a", job_id=job.id)
+            if current is not None and current.status == "failed":
+                break
+            await asyncio.sleep(0.01)
+        assert "job-1" in failed_jobs
+        # worker 存活：第二个 job 正常完成
+        job2 = await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-2",
+            kind="test",
+            resource_type="test-resource",
+            resource_id="resource-2",
+            max_attempts=1,
+        )
+        await _wait_for_job(repository, "user-a", job2.id, "succeeded")
+        assert handled == ["job-1", "job-2"]
+    finally:
+        await runtime.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_background_worker_survives_handle_failure_error(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（问题3）：handler 异常 + handle_failure 抛错不得冒泡终止 worker。"""
+    monkeypatch.setattr("super_ai.jobs.runtime._worker_backoff", _fast_worker_backoff)
+    engine = create_memory_engine(migrated_database_url)
+    repository = SQLiteBackgroundJobRepository(create_memory_session_factory(engine))
+    handled: list[str] = []
+
+    async def failing_handler(context: Any) -> None:
+        handled.append(context.job.id)
+        raise RuntimeError("handler boom")
+
+    async def ok_handler(context: Any) -> None:
+        handled.append(context.job.id)
+
+    runtime = BackgroundJobRuntime(repository, concurrency=1, poll_seconds=0.01)
+    runtime.register("boom", failing_handler)
+    runtime.register("ok", ok_handler)
+
+    real_handle_failure = repository.handle_failure
+    failed_jobs: set[str] = set()
+
+    async def flaky_handle_failure(**kwargs: Any) -> Any:
+        job_id = str(kwargs["job_id"])
+        if job_id == "job-boom":
+            failed_jobs.add(job_id)
+            raise sqlite3.OperationalError("database is locked")
+        return await real_handle_failure(**kwargs)
+
+    monkeypatch.setattr(repository, "handle_failure", flaky_handle_failure)
+    try:
+        await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-boom",
+            kind="boom",
+            resource_type="test-resource",
+            resource_id="resource-boom",
+            max_attempts=1,
+        )
+        await runtime.start()
+        # handler 抛错 + handle_failure 抛错：worker 不应死亡
+        for _ in range(200):
+            if "job-boom" in failed_jobs:
+                break
+            await asyncio.sleep(0.01)
+        assert "job-boom" in failed_jobs
+        job2 = await repository.enqueue(
+            owner_user_id="user-a",
+            job_id="job-ok",
+            kind="ok",
+            resource_type="test-resource",
+            resource_id="resource-ok",
+            max_attempts=1,
+        )
+        await _wait_for_job(repository, "user-a", job2.id, "succeeded")
+        assert handled == ["job-boom", "job-ok"]
+    finally:
+        await runtime.stop()
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

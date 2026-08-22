@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [harden-worker-loop-error-handling](/changes/active/harden-worker-loop-error-handling/)
 - [exempt-self-referential-tools-from-compression](/changes/active/exempt-self-referential-tools-from-compression/)
 - [add-coverage-thresholds](/changes/active/add-coverage-thresholds/)
 - [rate-limit-high-cost-endpoints](/changes/active/rate-limit-high-cost-endpoints/)

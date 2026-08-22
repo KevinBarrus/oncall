@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "harden-worker-loop-error-handling", link: "/changes/active/harden-worker-loop-error-handling/" },
   { text: "exempt-self-referential-tools-from-compression", link: "/changes/active/exempt-self-referential-tools-from-compression/" },
   { text: "add-coverage-thresholds", link: "/changes/active/add-coverage-thresholds/" },
   { text: "rate-limit-high-cost-endpoints", link: "/changes/active/rate-limit-high-cost-endpoints/" },
