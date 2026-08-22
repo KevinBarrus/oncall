@@ -101,6 +101,8 @@
 
 - 现状：`spec.md` 要求 95% 一律拒绝并手动压缩；实现先内联压缩、失败才拒绝（行为更优但与主规格不一致）；另 `memory.py` docstring 仍写"characters / 4"（已用 tokenizer）。
 - 方案：同步 spec.md 的 95% Scenario（改为"先内联压缩，失败才拒绝"）与 docstring（tokenizer 优先 + Unicode 回退）。
+- 已完成：主 spec "Context hard limit" 更新为先尝试内联压缩、仍超限/压缩失败才阻止，场景拆为"压缩后拒绝"与"压缩失败拒绝"；同步 `defer-chat-memory-compaction` change 的 MODIFIED 块（含 Thirty-turn 场景名对齐，修复其 archive 校验）；`maybe_compress_tool_output` docstring 改为 tokenizer 优先描述。
+- 验证：`openspec validate chat-memory-management --strict` + defer change 通过；docs build 通过。
 
 ## 问题15的解决方案：CI 合并测试 + 运维端点边界（P2，确认项）
 

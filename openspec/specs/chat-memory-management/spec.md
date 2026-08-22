@@ -58,12 +58,16 @@ TBD - created by archiving change add-session-memory-modes. Update Purpose after
 - **THEN** API MUST 返回压缩前后所有原始消息，模型请求 MUST 只包含摘要和压缩边界后的消息
 
 ### Requirement: Context hard limit
-系统 SHALL 在候选上下文占用达到或超过 95% 时阻止新增聊天消息，并要求 user 先执行手动压缩。
+系统 SHALL 在候选上下文占用达到或超过 95% 时先尝试内联自动压缩；压缩后仍达到或超过 95%（或压缩失败）时阻止新增聊天消息，并要求 user 先执行手动压缩。
 
 #### Scenario: Frontend blocks at hard limit
 - **WHEN** 当前会话 `contextUsagePercent` 达到或超过 95
 - **THEN** 前端 MUST 禁用输入和发送并显示执行手动压缩的中文提示
 
-#### Scenario: Backend rejects bypass attempt
-- **WHEN** 客户端绕过界面提交会使上下文占用达到或超过 95% 的消息
-- **THEN** 后端 MUST 返回统一上下文上限错误且 MUST NOT 持久化该消息
+#### Scenario: Backend compacts inline before rejecting
+- **WHEN** 客户端提交会使上下文占用达到或超过 95% 的消息
+- **THEN** 后端 MUST 先尝试内联压缩（超时与预算约束内）；压缩成功后重新评估候选上下文，仅当仍达到或超过 95% 时返回统一上下文上限错误，且 MUST NOT 持久化该消息
+
+#### Scenario: Backend rejects when inline compaction fails
+- **WHEN** 内联压缩失败（LLM 不可用、摘要无效或超时）
+- **THEN** 后端 MUST 在会话状态记录压缩失败原因，并返回统一上下文上限错误，MUST NOT 持久化该消息

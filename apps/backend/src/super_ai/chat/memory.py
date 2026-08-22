@@ -376,8 +376,9 @@ async def maybe_compress_tool_output(
 ) -> str:
     """Compress a tool output via LLM summarisation when it exceeds the threshold.
 
-    Rough token estimate: characters / 4.  If the output is below the threshold
-    it is returned unchanged.  Otherwise the LLM is asked to produce a concise
+    Token count prefers the configured model's tokenizer, falling back to a
+    safe Unicode estimate.  If the output is below the threshold it is
+    returned unchanged.  Otherwise the LLM is asked to produce a concise
     summary preserving all key facts.
     """
     token_count = count_tokens(text, llm_provider=llm_provider)
