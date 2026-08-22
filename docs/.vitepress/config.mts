@@ -2,6 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "sanitize-exc-info-log-output", link: "/changes/active/sanitize-exc-info-log-output/" },
   { text: "align-hard-limit-spec-wording", link: "/changes/active/align-hard-limit-spec-wording/" },
   { text: "map-timed-out-frontend-status", link: "/changes/active/map-timed-out-frontend-status/" },
   { text: "mark-structured-compression-fallback", link: "/changes/active/mark-structured-compression-fallback/" },

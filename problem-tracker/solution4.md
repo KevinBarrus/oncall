@@ -54,6 +54,8 @@
 
 - 现状：`SanitizingFormatter` 只脱敏 `record.getMessage()` 渲染文本，`exc_info` 堆栈与 `stack_info` 不经过脱敏；已核实当前 `super_ai` 命名空间无 `logger.exception`/`exc_info` 调用点（潜在缺口非现行泄漏）。
 - 方案：`format()` 中对 `formatException(record.exc_info)` 与 `record.stack_info` 拼接结果同样过 `_redact_text`；补含 exc_info 的脱敏测试固化。
+- 已完成：`format()` 改为对 `super().format(record)` 的完整结果（含 exc_text/stack_info）再整体过一次 `_redact_text`；新增回归测试（真实 `sys.exc_info()` 堆栈中 `secretKey` 值被脱敏、RuntimeError 保留）。
+- 验证：`uv run pytest -m "not local_config"` = 226 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题7的解决方案：REST append 端点租约与限流（P2）
 

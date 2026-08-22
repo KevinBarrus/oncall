@@ -6,6 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [sanitize-exc-info-log-output](/changes/active/sanitize-exc-info-log-output/)
 - [align-hard-limit-spec-wording](/changes/active/align-hard-limit-spec-wording/)
 - [map-timed-out-frontend-status](/changes/active/map-timed-out-frontend-status/)
 - [mark-structured-compression-fallback](/changes/active/mark-structured-compression-fallback/)

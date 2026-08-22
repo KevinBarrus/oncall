@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import pytest
 
@@ -72,6 +73,27 @@ def test_sanitizing_formatter_keeps_plain_messages_unchanged() -> None:
         None,
     )
     assert formatter.format(record) == record.getMessage()
+
+
+def test_sanitizing_formatter_redacts_exc_info_traceback() -> None:
+    """回归（问题6）：exc_info 堆栈文本中的敏感键值也必须脱敏。"""
+    formatter = SanitizingFormatter("%(message)s")
+    try:
+        raise RuntimeError('request failed: {"secretKey": "sk-trace-99", "region": "x"}')
+    except RuntimeError:
+        record = logging.LogRecord(
+            "super_ai.test",
+            logging.ERROR,
+            __file__,
+            1,
+            "operation failed",
+            (),
+            sys.exc_info(),
+        )
+    rendered = formatter.format(record)
+    assert "sk-trace-99" not in rendered
+    assert "secretKey" in rendered and "***" in rendered
+    assert "RuntimeError" in rendered
 
 
 def test_configured_logger_sanitizes_plain_output(capsys: pytest.CaptureFixture[str]) -> None:

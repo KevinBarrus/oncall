@@ -158,7 +158,9 @@ class SanitizingFormatter(logging.Formatter):
         rendered = record.getMessage()
         record.msg = _redact_text(rendered)
         record.args = ()
-        return super().format(record)
+        # 对 super().format 的完整结果（含 exc_info 堆栈与 stack_info）再做一次
+        # 文本脱敏，避免未来 logger.exception / exc_info=True 的堆栈泄漏敏感值
+        return _redact_text(super().format(record))
 
 
 def _redact_text(text: str) -> str:
