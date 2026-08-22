@@ -2,6 +2,8 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
+  { text: "record-job-compaction-failures", link: "/changes/active/record-job-compaction-failures/" },
+  { text: "isolate-evidence-persist-failures", link: "/changes/active/isolate-evidence-persist-failures/" },
   { text: "serialize-rest-append-with-lease", link: "/changes/active/serialize-rest-append-with-lease/" },
   { text: "purge-compressed-evidence-on-clear", link: "/changes/active/purge-compressed-evidence-on-clear/" },
   { text: "sanitize-exc-info-log-output", link: "/changes/active/sanitize-exc-info-log-output/" },

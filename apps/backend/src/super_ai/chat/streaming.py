@@ -796,14 +796,24 @@ def _wrap_tool_output_compression(
             if mode == "sampled_fallback":
                 metadata["compressionFailed"] = True
             if evidence_repository is not None:
-                evidence = await evidence_repository.create(
-                    owner_user_id=request.owner_user_id,
-                    chat_session_id=request.session_id,
-                    tool_name=tool.name,
-                    content=result,
-                    source_hash=str(metadata["sourceHash"]),
-                )
-                metadata["evidenceId"] = evidence.id
+                try:
+                    evidence = await evidence_repository.create(
+                        owner_user_id=request.owner_user_id,
+                        chat_session_id=request.session_id,
+                        tool_name=tool.name,
+                        content=result,
+                        source_hash=str(metadata["sourceHash"]),
+                    )
+                except Exception as exc:
+                    # 证据落库失败不把成功的工具调用转为失败：保留压缩摘要，仅记事件
+                    emit_event(
+                        logger,
+                        "chat.tool_evidence.persist_failed",
+                        toolName=tool.name,
+                        errorCategory=exc.__class__.__name__,
+                    )
+                else:
+                    metadata["evidenceId"] = evidence.id
             return {
                 "content": compressed.removeprefix("[compressed] "),
                 "_compression": metadata,
@@ -820,14 +830,23 @@ def _wrap_tool_output_compression(
                 and evidence_repository is not None
             ):
                 metadata = cast(dict[str, object], compressed["_compression"])
-                evidence = await evidence_repository.create(
-                    owner_user_id=request.owner_user_id,
-                    chat_session_id=request.session_id,
-                    tool_name=tool.name,
-                    content=json.dumps(result, ensure_ascii=False, default=str),
-                    source_hash=str(metadata["sourceHash"]),
-                )
-                metadata["evidenceId"] = evidence.id
+                try:
+                    evidence = await evidence_repository.create(
+                        owner_user_id=request.owner_user_id,
+                        chat_session_id=request.session_id,
+                        tool_name=tool.name,
+                        content=json.dumps(result, ensure_ascii=False, default=str),
+                        source_hash=str(metadata["sourceHash"]),
+                    )
+                except Exception as exc:
+                    emit_event(
+                        logger,
+                        "chat.tool_evidence.persist_failed",
+                        toolName=tool.name,
+                        errorCategory=exc.__class__.__name__,
+                    )
+                else:
+                    metadata["evidenceId"] = evidence.id
             return compressed
         return cast(object, result)
 

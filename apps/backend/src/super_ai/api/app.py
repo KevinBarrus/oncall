@@ -1832,12 +1832,22 @@ def _chat_memory_compaction_job_handler(
             _request_for_app(app), owner_user_id=context.job.owner_user_id
         )
         await context.raise_if_cancelled()
-        await service.compact_once(
-            owner_user_id=context.job.owner_user_id,
-            session=session,
-            history=history,
-            system_prompt=prompt,
-        )
+        try:
+            await service.compact_once(
+                owner_user_id=context.job.owner_user_id,
+                session=session,
+                history=history,
+                system_prompt=prompt,
+            )
+        except Exception as exc:
+            # 与 95% 内联路径一致的失败记账：job 失败也写入会话可见的压缩错误
+            await repositories.chat.update_memory_state(
+                owner_user_id=context.job.owner_user_id,
+                session_id=session.id,
+                last_compaction_error=exc.__class__.__name__,
+                last_compaction_failed_at=datetime.now(timezone.utc),
+            )
+            raise
 
     return handle
 

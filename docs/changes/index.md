@@ -6,6 +6,8 @@ title: OpenSpec 变更
 
 ## 进行中
 
+- [record-job-compaction-failures](/changes/active/record-job-compaction-failures/)
+- [isolate-evidence-persist-failures](/changes/active/isolate-evidence-persist-failures/)
 - [serialize-rest-append-with-lease](/changes/active/serialize-rest-append-with-lease/)
 - [purge-compressed-evidence-on-clear](/changes/active/purge-compressed-evidence-on-clear/)
 - [sanitize-exc-info-log-output](/changes/active/sanitize-exc-info-log-output/)

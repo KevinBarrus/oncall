@@ -77,7 +77,8 @@
 
 - 现状：70% 后台 job 失败只进 job 表并退避重试，不写 `last_compaction_error`；与内联路径失败可见性不对称。
 - 方案：job handler 捕获异常后调用 `update_memory_state(last_compaction_error=...)`。
-- 验证：job 失败后会话 memory API 返回 lastCompactionError。
+- 已完成：handler 的 `compact_once` 包 try/except，先写 `last_compaction_error`/`last_compaction_failed_at` 再重新抛出（job 走既有 failed/retry 语义）；新增回归测试（mock service 抛错，断言会话记录压缩错误）。
+- 验证：`uv run pytest -m "not local_config"` = 230 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题10的解决方案：token 计数复用 provider（P2，性能）
 
@@ -95,7 +96,8 @@
 
 - 现状：压缩 wrapper 中 `evidence_repository.create` 抛异常直接冒泡，LangChain 记为工具错误，已生成的压缩结果被丢弃。
 - 方案：evidence 写入包 try/except，失败仅 emit 事件（metadata 不含 evidenceId，模型仍可使用压缩摘要）。
-- 验证：evidence 仓储抛错桩，断言工具调用仍成功返回压缩摘要。
+- 已完成：str 与 dict 两条 evidence 写入路径包 try/except，失败仅 emit `chat.tool_evidence.persist_failed` 事件（含 toolName/errorCategory），`evidenceId` 仅在成功时写入；新增回归测试（create 抛错时工具调用仍返回压缩摘要且无 evidenceId）。
+- 验证：`uv run pytest -m "not local_config"` = 230 passed（新增 1 个）；ruff/pyright 全绿。
 
 ## 问题13的解决方案：流失败持久化 partial 回答（P2，确认项）
 

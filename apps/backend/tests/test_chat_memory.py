@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -471,6 +472,54 @@ async def test_large_async_tool_still_gets_compression_wrapper() -> None:
     assert coroutine is not None
     result = await coroutine()
     assert "[... 输出已按信号" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_evidence_persist_failure_keeps_compressed_tool_result(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（问题12）：evidence 落库失败不得把成功的工具调用转为失败。"""
+    engine = create_memory_engine(migrated_database_url)
+    try:
+        repositories = create_sqlite_memory_repositories(create_memory_session_factory(engine))
+        session = await repositories.chat.create_session(
+            owner_user_id="user-a", session_id="evidence-persist-fail"
+        )
+        evidence_repo = cast(Any, repositories.compressed_tool_evidence)
+
+        async def failing_create(**kwargs: object) -> Any:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(evidence_repo, "create", failing_create)
+
+        async def big_output() -> str:
+            return "y" * 12_000
+
+        tool = StructuredTool.from_function(coroutine=big_output, name="big_output", description="")
+        request = ChatAgentRequest(
+            owner_user_id="user-a",
+            session_id=session.id,
+            system_prompt="system",
+            messages=[],
+            accessible_knowledge_base_ids=(),
+        )
+        wrapped = _wrap_tool_output_compression(
+            tool,
+            cast(LlmProvider, FailingProvider()),
+            request,
+            evidence_repo,
+        )
+        coroutine = wrapped.coroutine
+        assert coroutine is not None
+        result = await coroutine()
+        # 压缩摘要仍返回，且无 evidenceId（落库失败不影响工具调用）
+        assert isinstance(result, dict)
+        assert "content" in result
+        compression = cast(dict[str, object], result["_compression"])
+        assert compression.get("evidenceId") is None
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture

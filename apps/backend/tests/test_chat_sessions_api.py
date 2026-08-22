@@ -11,9 +11,11 @@ from alembic.config import Config
 from starlette.requests import Request
 
 from super_ai.api.app import (
+    _chat_memory_compaction_job_handler,  # pyright: ignore[reportPrivateUsage]
     _schedule_chat_memory_compaction,  # pyright: ignore[reportPrivateUsage]
     create_app,
 )
+from super_ai.jobs import BackgroundJobContext
 from super_ai.memory.database import create_memory_engine, create_memory_session_factory
 from super_ai.memory.sqlite import create_sqlite_memory_repositories
 
@@ -280,6 +282,49 @@ async def test_rest_append_respects_execution_lease(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "CHAT_SESSION_BUSY"
+
+
+@pytest.mark.asyncio
+async def test_compaction_job_failure_records_session_error(
+    migrated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（问题9）：后台压缩 job 失败同样写会话可见的 last_compaction_error。"""
+    app = create_app(database_url=migrated_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        owner = await _register(client, "compaction-owner@example.com", "Compaction Owner")
+        headers = _auth_headers(owner["accessToken"])
+        session = (await client.post("/chat/sessions", headers=headers, json={})).json()["data"]
+
+    repositories = app.state.memory_repositories
+    job = await repositories.background_jobs.enqueue(
+        owner_user_id=owner["user"]["id"],
+        job_id="job-compaction-fail",
+        kind="chat_memory_compaction",
+        resource_type="chat_session",
+        resource_id=session["id"],
+    )
+    context = BackgroundJobContext(job=job, repository=repositories.background_jobs)
+
+    class BoomService:
+        async def compact_once(self, **kwargs: object) -> object:
+            raise RuntimeError("summary unavailable")
+
+    async def fake_context(_request: object, *, owner_user_id: str) -> tuple[object, str]:
+        return BoomService(), "system prompt"
+
+    monkeypatch.setattr("super_ai.api.app._chat_memory_context", fake_context)
+    handler = _chat_memory_compaction_job_handler(app)
+    with pytest.raises(RuntimeError):
+        await handler(context)
+
+    session_after = await repositories.chat.get_session(
+        owner_user_id=owner["user"]["id"], session_id=session["id"]
+    )
+    assert session_after is not None
+    assert session_after.last_compaction_error == "RuntimeError"
+    assert session_after.last_compaction_failed_at is not None
 
 
 async def _register(client: httpx.AsyncClient, email: str, display_name: str) -> dict[str, Any]:
