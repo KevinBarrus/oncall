@@ -18,6 +18,9 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import time
 from pathlib import Path
 
@@ -35,6 +38,7 @@ torch.serialization.add_safe_globals([DynamicCache, DynamicLayer, set])
 _TEST_DIR = Path(__file__).resolve().parent
 _DATA_DIR = _TEST_DIR / "data"
 _CACHE_PATH = _DATA_DIR / "cache_knowledge.pt"
+_CACHE_META_PATH = _DATA_DIR / "cache_knowledge.json"
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
@@ -42,6 +46,9 @@ _KB_FILES = [
     _DATA_DIR / "team-alert-response-spec.md",
     _DATA_DIR / "service-topology.md",
     _DATA_DIR / "incident-postmortems.md",
+    _DATA_DIR / "nginx-troubleshooting.md",
+    _DATA_DIR / "k8s-pod-troubleshooting.md",
+    _DATA_DIR / "observability-metrics.md",
 ]
 
 # ---------------------------------------------------------------------------
@@ -181,6 +188,16 @@ def _load_knowledge_text() -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _knowledge_fingerprint() -> str:
+    """Return a stable fingerprint for the exact CAG prefix inputs."""
+    digest = hashlib.sha256(MODEL_NAME.encode("utf-8"))
+    for path in _KB_FILES:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    digest.update(_build_cache_prompt(_load_knowledge_text()).encode("utf-8"))
+    return digest.hexdigest()
+
+
 def get_knowledge_text() -> str:
     """Public accessor — used as 'contexts' for RAG metric computation."""
     return _load_knowledge_text()
@@ -237,8 +254,17 @@ def prepare_cache() -> tuple[DynamicCache, int, float]:
         (kv_cache, kv_len, setup_seconds)
     """
     model, tokenizer = ensure_model()
+    fingerprint = _knowledge_fingerprint()
 
-    if _CACHE_PATH.exists():
+    cache_is_current = False
+    if _CACHE_PATH.exists() and _CACHE_META_PATH.exists():
+        try:
+            metadata = json.loads(_CACHE_META_PATH.read_text(encoding="utf-8"))
+            cache_is_current = metadata.get("fingerprint") == fingerprint
+        except (OSError, json.JSONDecodeError):
+            cache_is_current = False
+
+    if _CACHE_PATH.exists() and cache_is_current:
         print(f"[cag] Loading cached KV from {_CACHE_PATH.name}...")
         t0 = time.time()
         kv = torch.load(_CACHE_PATH, weights_only=True)
@@ -246,6 +272,9 @@ def prepare_cache() -> tuple[DynamicCache, int, float]:
         elapsed = time.time() - t0
         print(f"[cag] Cache loaded  kv_len={kv_len}  time={elapsed:.1f}s")
         return kv, kv_len, elapsed
+
+    if _CACHE_PATH.exists():
+        print("[cag] Existing KV Cache is stale or missing metadata; rebuilding...")
 
     # First run — precompute and persist
     print("[cag] Precomputing KV Cache (one-time, ~30-60s on CPU)...")
@@ -259,6 +288,19 @@ def prepare_cache() -> tuple[DynamicCache, int, float]:
 
     _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(kv, _CACHE_PATH)
+    _CACHE_META_PATH.write_text(
+        json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "model": MODEL_NAME,
+                "documents": [path.name for path in _KB_FILES],
+                "kvLength": kv_len,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     print(f"[cag] KV Cache ready  kv_len={kv_len}  time={elapsed:.0f}s  "
           f"saved → {_CACHE_PATH.name}")
@@ -293,7 +335,8 @@ def answer_question(
     # 3. Generate from cached state
     torch.cuda.empty_cache()  # no-op on CPU, prevents fragmentation on GPU
     t0 = time.time()
-    output_ids = generate(model, input_ids, kv)
+    max_new_tokens = int(os.environ.get("CAG_MAX_NEW_TOKENS", "500"))
+    output_ids = generate(model, input_ids, kv, max_new_tokens=max_new_tokens)
     gen_time = time.time() - t0
 
     # 4. Decode

@@ -5,3 +5,4 @@ tests/.env.test
 
 # CAG KV Cache (precomputed, not for version control)
 tests/data/cache_knowledge.pt
+tests/data/cache_knowledge.json

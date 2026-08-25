@@ -1,5 +1,6 @@
 [
   {
+    "category": "exact-fact",
     "question": "按照团队的告警分级标准，api-gateway P99 延迟超过多少需要触发 P0 告警？P0 的响应时间要求是什么？",
     "ground_truth": "根据团队告警响应规范 v2.7：api-gateway 属于核心服务（Core Tier），P99 延迟 > 800ms 持续 5 分钟触发 P0-Critical 告警。P0 的响应要求：3 分钟内确认告警，15 分钟介入。30 分钟未恢复则通知 CTO。P0/P1 标准处理 SOP 为：ACK → TRIAGE（判断已知问题、影响面）→ MITIGATE（先止损：重启/回滚/切流，不追求根因）→ RESOLVE（60 分钟内提交初步复盘）→ POSTMORTEM（5 个工作日内提交完整复盘）。",
     "atomic_facts": [
@@ -11,6 +12,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "团队的 P0 告警触发后，如果主值班没有响应，升级流程是怎样的？值班主任多久会被通知到？",
     "ground_truth": "根据团队告警响应规范：主值班 5 分钟内未确认 P0 告警 → 自动通知副值班（企微群+短信）。副值班再 5 分钟未确认 → 通知 ops-lead。所以最坏情况下，值班主任（ops-lead）在告警触发后约 10 分钟会被通知到。值班信息可通过企微群发送 /oncall who 查询。轮换周期为每周一 10:00 交接。",
     "atomic_facts": [
@@ -22,6 +24,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "凌晨 3 点 log-aggregator 触发 CPU 90% 告警，按照团队规范，应该怎么处理？是否需要立即叫醒主值班？",
     "ground_truth": "不需要立即叫醒主值班。根据团队告警响应规范：log-aggregator 属于支撑服务（Support Tier），CPU 告警阈值为 > 90% 持续 15 分钟，等级为 P2/P3。同时，凌晨 2:00-6:00 的 P2/P3 告警会被降级为静默，不产生实时通知，改为早上 9:00 批量推送摘要。此外，log-aggregator 是已知的单点（暂无 HA），属于已知脆弱点，允许工作时间修复。值班工程师应在第二天工作时间处理即可。",
     "atomic_facts": [
@@ -33,6 +36,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "order-service 和 user-service 之间有什么依赖关系？如果 user-service 出现抖动，会对 order-service 造成什么具体影响？有哪些已知的防护措施还没做？",
     "ground_truth": "根据服务拓扑文档：order-service 通过 gRPC 调用 user-service 进行用户状态校验（下单路径：api-gateway → order-service → user-service → user-db）。user-service 抖动会导致 order-service 的下单功能失败。已知脆弱点：order-service 对 user-service 的 gRPC 调用无降级方案，意味着 user-service 一旦出问题，下单就会直接失败。尚未完成的防护措施：order-service 和 user-service 之间加 circuit breaker 已排期 8 月迭代（来自 INC-2026-0715 的 Action Item）。另外 Redis 单实例也是脆弱点，挂了会导致 user/order 两个服务的缓存命中率下降、DB 被打爆。",
     "atomic_facts": [
@@ -44,6 +48,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "回顾 INC-2026-0715 的故障复盘，api-gateway 大面积超时的根因是什么？这次故障最大的经验教训是什么？",
     "ground_truth": "根因：order-service 在 14:15 发布了一个版本，gRPC 连接池 poolSize 参数被误改为 200（正常值 20），导致通过 order-service → user-service → user-db 的调用链产生 10 倍的数据库连接。user-db 连接数达到 max_connections=400 上限，user-service 因无法查询 DB 而 CrashLoopBackOff，最终 api-gateway P99 延迟飙升到 3500ms，全站不可用 46 分钟，影响约 12 万 UV。最大教训是调用链放大效应：上游一个小配置变更，经过多层服务调用链后对最底层（DB）造成 10 倍冲击。排查 P0 故障时不能只盯着报错的服务本身，要追踪整个调用链。已完成的改进：gRPC 连接池配置加入 code review checklist、user-db 增加 Grafana 连接数面板。",
     "atomic_facts": [
@@ -55,6 +60,7 @@
     "kb_dependent": true
   },
   {
+    "category": "procedure",
     "question": "INC-2026-0618 的 Redis 缓存击穿事故中，为什么不能简单通过给 key 延长 TTL 来解决？团队最终采用了什么方案？",
     "ground_truth": "不能通过简单延长 TTL 解决的原因：事故场景是运营推送全量用户促销通知后瞬时流量达到平时的 8 倍，热门 key（当日促销商品库存）在流量峰值时恰好过期。即使加长 TTL，在高并发场景下 key 仍然可能在任意时间点过期并触发击穿——TTL 只是延后了问题，没有消除击穿的可能性。团队采用的方案是逻辑过期 + 互斥锁：物理不删除 key，值中包含逻辑过期时间戳；读取时发现逻辑过期后，通过互斥锁让一个线程去后台异步刷新缓存，其他线程返回旧值（容忍短暂不一致）。该方案已在 2026-06-20 完成上线。另外，运营活动前必须提前预热缓存已纳入流程规范。",
     "atomic_facts": [
@@ -66,6 +72,7 @@
     "kb_dependent": true
   },
   {
+    "category": "structured",
     "question": "团队的 user-db 和 order-db 的 max_connections 分别设置为多少？如果遇到 'too many connections' 错误，按照团队的经验，有哪些排查方向和临时处置措施？",
     "ground_truth": "根据服务拓扑文档：user-db 的 max_connections=400，order-db 的 max_connections=300。根据 INC-2026-0715 的经验：遇到 too many connections 时，排查方向应包括：1) 检查是否有最近的服务发布（尤其是连接池相关配置变更）；2) 追踪调用链——不一定是直连该 DB 的服务，可能是上游服务通过调用链放大了连接数（调用链放大效应）；3) 检查是否有服务处于 CrashLoopBackOff 并不断重连。临时处置措施：可以临时调大 max_connections（上次从 400 调到 600 恢复了服务），但必须随后找到根因。长期改进包括配置 max_connections 的自动扩容策略（评审中）和加 circuit breaker。",
     "atomic_facts": [
@@ -77,6 +84,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "对比分析 INC-2026-0715（api-gateway 超时）和 INC-2026-0522（user-db 主从延迟）两个故障，它们在故障传导模式上有什么共同点？",
     "ground_truth": "两个故障的共同点是都涉及调用链/数据链的传导放大效应。INC-2026-0715 是配置变更（poolSize=200）→ order-service 连接数暴涨 → user-service 被连带拖垮 → user-db 连接池耗尽 → api-gateway 全站超时，体现的是横向的服务间依赖传导。INC-2026-0522 是从库 HDD 磁盘 IO 跑满 → binlog 同步延迟 120 秒 → 用户注册后立即查询返回空结果，体现的是纵向的主从数据一致性传导。共同模式：问题都起源于离用户感知最远的底层（一个是 DB 连接池、一个是磁盘 IO），但影响都传导到了最终用户体验。排查时不能只看报错的服务，需要沿调用链/数据流向上追溯。",
     "atomic_facts": [
@@ -87,6 +95,7 @@
     "kb_dependent": true
   },
   {
+    "category": "procedure",
     "question": "团队在告警管理方面有哪些具体的聚合和抑制规则？这些规则背后的设计思路是什么？",
     "ground_truth": "根据团队告警响应规范，具体的规则包括：1) 同一服务 5 分钟内触发的多条告警合并为一条 Incident，带 'burst' 标签——设计思路是避免通知风暴，让值班人聚焦在事件而非告警数量上；2) api-gateway 告警触发后自动抑制其后端服务（user-service/order-service）的同因告警，通过 Alertmanager inhibit_rules 实现——设计思路是 api-gateway 是流量入口，它出问题时后端服务的告警大多是症状而非根因，抑制可以减少噪音；3) 凌晨 2:00-6:00 的 P2/P3 告警降级为静默，早上 9:00 批量推送摘要——设计思路是低优先级告警不值得在睡眠时间唤醒工程师，同时避免告警疲劳导致真正重要的告警被忽视。",
     "atomic_facts": [
@@ -98,6 +107,7 @@
     "kb_dependent": false
   },
   {
+    "category": "cross-document",
     "question": "如果一个用户反馈注册成功后查看不到自己的信息，按照团队的经验和架构，最可能的原因是什么？应该如何验证和修复？",
     "ground_truth": "根据 INC-2026-0522 的复盘经验，最可能的原因是 user-db 主从延迟导致脏读。架构上 user-service 连接 user-db，注册是写操作（走主库），但注册后的立即查询可能走了从库，如果主从延迟过大（该事故中达到 120 秒），就会查询不到刚写入的数据。验证方法：1) 检查 user-db 的主从延迟监控（现已设置 > 30 秒触发 P2 告警）；2) 确认该用户数据在主库上存在（直接查主库）；3) 检查从库磁盘 IO 是否跑满（该事故中是 HDD 瓶颈）。修复方案已在 INC-2026-0522 后实施：从库升级为 SSD（2026-06-01）、注册后关键查询改为强制走主库（2026-05-25）、增加主从延迟监控。",
     "atomic_facts": [
@@ -109,6 +119,7 @@
     "kb_dependent": false
   },
   {
+    "category": "procedure",
     "question": "如果我要给 user-db 执行 ALTER TABLE 添加一个 varchar(255) 字段，从团队的经验出发，除了通用 DDL 安全实践外，还需要注意什么？",
     "ground_truth": "除了通用的 DDL 安全实践（低峰期执行、ONLINE DDL、pt-online-schema-change 等），从团队经验出发需要额外注意：1) user-db 的 max_connections=400，varchar 大字段的批量更新可能产生超预期的 binlog 量——参考 INC-2026-0522，从库曾因为 varchar 大字段的 binlog 同步导致磁盘 IO 跑满和主从延迟 120 秒，现在虽然已升级为 SSD，但仍需关注 binlog 量；2) 注意 DDL 期间对 order-service 的间接影响——order-service 通过 gRPC 调用 user-service，如果 DDL 导致 user-service 响应变慢，会通过调用链影响下单功能；3) 确认变动字段不在注册-登录的'写后即读'关键路径上，如果是，必须确保读操作走主库。",
     "atomic_facts": [
@@ -120,6 +131,7 @@
     "kb_dependent": false
   },
   {
+    "category": "structured",
     "question": "团队的 P2 级别故障处理流程是怎样的？和 P0 有什么关键区别？",
     "ground_truth": "根据团队告警响应规范，P2-Medium 的处理流程为：1) 30 分钟内确认告警，2 小时介入；2) 通知方式仅为企微群（无短信和电话）；3) 处理 SOP：ACK → DIAG（可挂起至次日在工作时间分析）→ FIX（排入当周迭代）→ CLOSE（修复后在工单中备注根因和修复方式）。与 P0 的关键区别：P0 要求 3 分钟确认、立即止损（重启/回滚/切流），不追求根因，强调快速恢复；P2 允许从容分析根因并排入迭代，不需要立即修复。P2 还有一个特殊规则：如果 8 小时未恢复则升级为 P1。此外，P2 在凌晨 2:00-6:00 会被降级为静默。",
     "atomic_facts": [
@@ -131,6 +143,7 @@
     "kb_dependent": false
   },
   {
+    "category": "unanswerable",
     "question": "团队的 Git 分支管理策略是什么？代码审查需要几个人 approve？",
     "ground_truth": "文档中未涉及 Git 分支管理策略和代码审查流程。这些信息不在当前知识库覆盖范围内。",
     "atomic_facts": [],
@@ -138,6 +151,7 @@
     "kb_dependent": false
   },
   {
+    "category": "unanswerable",
     "question": "前端项目的单元测试覆盖率目标是多少？E2E 测试使用什么框架？",
     "ground_truth": "文档中未涉及前端测试相关的任何信息。知识库的三篇文档分别覆盖告警响应规范、服务拓扑和历史故障复盘，均不包含前端工程实践内容。",
     "atomic_facts": [],
@@ -145,6 +159,7 @@
     "kb_dependent": false
   },
   {
+    "category": "unanswerable",
     "question": "团队的新成员入职流程是怎样的？开发环境搭建需要哪些步骤和权限申请？",
     "ground_truth": "文档中未涉及新成员入职流程和开发环境搭建指南。当前知识库覆盖的是运维告警、服务架构和故障复盘相关内容，不包含工程 onboarding 流程。",
     "atomic_facts": [],
@@ -152,6 +167,7 @@
     "kb_dependent": false
   },
   {
+    "category": "exact-fact",
     "question": "user-service 的 P99 延迟阈值和错误率阈值分别是多少？",
     "ground_truth": "根据团队告警响应规范，user-service 的 P99 延迟阈值为超过 500ms，错误率阈值为超过 0.5%。",
     "atomic_facts": [
@@ -162,6 +178,7 @@
     "kb_dependent": true
   },
   {
+    "category": "exact-fact",
     "question": "api-gateway 的错误率超过阈值后，应该按照什么优先级处理？",
     "ground_truth": "api-gateway 的错误率阈值为超过 1%。它属于核心服务，相关告警按 P0/P1 优先级处理，具体等级还要结合持续时间、影响面和告警规则判断。",
     "atomic_facts": [
@@ -172,6 +189,7 @@
     "kb_dependent": true
   },
   {
+    "category": "procedure",
     "question": "为什么 api-gateway 告警后可以抑制 user-service 和 order-service 的同因告警？",
     "ground_truth": "api-gateway 是流量入口，其故障发生后，下游 user-service 和 order-service 的告警通常是同一故障的症状而非根因。使用 Alertmanager inhibit_rules 抑制同因告警可以减少通知噪音，让值班人聚焦根因。",
     "atomic_facts": [
@@ -183,6 +201,7 @@
     "kb_dependent": true
   },
   {
+    "category": "exact-fact",
     "question": "notification-service 部署了几个副本，依赖哪些组件？",
     "ground_truth": "notification-service 使用 Python 3.12/FastAPI，部署 2 个副本，依赖 RabbitMQ 和 user-service。",
     "atomic_facts": [
@@ -194,6 +213,7 @@
     "kb_dependent": true
   },
   {
+    "category": "exact-fact",
     "question": "RabbitMQ 在当前服务拓扑中有什么高可用风险？",
     "ground_truth": "当前 RabbitMQ 没有配置镜像队列，节点重启可能导致消息丢失，这是服务拓扑文档记录的已知脆弱点。",
     "atomic_facts": [
@@ -204,6 +224,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "INC-2026-0715 中，临时调大 user-db 连接上限后为什么还要回滚 order-service？",
     "ground_truth": "调大 user-db 的 max_connections=400 到 600 只是临时恢复服务，不能消除根因。真正根因是 order-service 发布时把 gRPC 连接池 poolSize 从 20 错改为 200，导致调用链放大并耗尽数据库连接，因此还必须回滚 order-service。",
     "atomic_facts": [
@@ -215,6 +236,7 @@
     "kb_dependent": true
   },
   {
+    "category": "exact-fact",
     "question": "INC-2026-0618 的事故影响是什么？它属于缓存击穿还是缓存雪崩？",
     "ground_truth": "事故中下单成功率降至 63%，数据未丢失；根因是单个热门 key 过期后大量请求同时访问数据库，因此属于缓存击穿而不是大规模缓存雪崩。",
     "atomic_facts": [
@@ -226,6 +248,7 @@
     "kb_dependent": true
   },
   {
+    "category": "exact-fact",
     "question": "user-db 和 order-db 的备份策略是什么？",
     "ground_truth": "user-db 和 order-db 都采用每日全量备份加 binlog 增量备份。",
     "atomic_facts": [
@@ -235,6 +258,7 @@
     "kb_dependent": true
   },
   {
+    "category": "unanswerable",
     "question": "知识库中是否规定了生产环境的数据库账号申请流程？",
     "ground_truth": "当前知识库文档未规定生产环境数据库账号申请流程，现有内容主要覆盖告警规范、服务拓扑和历史故障复盘。",
     "atomic_facts": [],
@@ -242,6 +266,7 @@
     "kb_dependent": false
   },
   {
+    "category": "paraphrase",
     "question": "团队规定 api-gateway 的接口延迟达到什么程度需要触发最高优先级告警？P0 的响应时限分别是什么？",
     "ground_truth": "按团队告警响应规范 v2.7，api-gateway 属于核心服务（Core Tier），P99 延迟阈值超过 800ms 触发 P0-Critical 告警。P0 要求 3 分钟内确认告警、15 分钟介入处理，30 分钟未恢复需通知 CTO。",
     "atomic_facts": [
@@ -252,6 +277,7 @@
     "kb_dependent": true
   },
   {
+    "category": "paraphrase",
     "question": "历史上 order-service 的连接池配置错误造成过哪些连带影响？",
     "ground_truth": "INC-2026-0715 中 order-service 发布时 gRPC 连接池 poolSize 被误改为 200（正常 20），产生 10 倍数据库连接，user-service 无法查询 user-db 而 CrashLoop，最终 api-gateway 全站超时，约 12 万用户受影响。",
     "atomic_facts": [
@@ -262,6 +288,7 @@
     "kb_dependent": true
   },
   {
+    "category": "cross-document",
     "question": "user-db 连接池耗尽时，哪些上层服务会首先出现故障？结合架构和故障复盘说明。",
     "ground_truth": "根据服务拓扑，user-service 直接依赖 user-db；结合 INC-2026-0715 复盘，user-db 连接池耗尽时 user-service 无法查询数据库而 CrashLoop，随后 api-gateway 因下游不可用而全站超时。",
     "atomic_facts": [
@@ -270,5 +297,221 @@
     ],
     "reference": "服务拓扑 + 历史故障复盘",
     "kb_dependent": true
+  },
+  {
+    "category": "exact-fact",
+    "question": "P1 告警的确认时限、介入时限和升级条件分别是什么？",
+    "ground_truth": "P1-High 告警要求 10 分钟内确认、30 分钟介入；如果 2 小时仍未恢复，则升级为 P0。",
+    "atomic_facts": ["P1 10 分钟内确认", "P1 30 分钟介入", "2 小时未恢复升级为 P0"],
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "category": "exact-fact",
+    "question": "order-service 的 P99 延迟阈值和 CPU 阈值分别是多少？",
+    "ground_truth": "order-service 的 P99 延迟阈值是超过 600ms，CPU 阈值是超过 75% 持续 5 分钟。",
+    "atomic_facts": ["P99 延迟超过 600ms", "CPU 超过 75% 持续 5 分钟"],
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "category": "exact-fact",
+    "question": "当前值班轮换什么时候交接？如何查询当前值班人？",
+    "ground_truth": "值班轮换在每周一 10:00 交接；可以在企微群发送 `/oncall who` 查询当前值班人。",
+    "atomic_facts": ["每周一 10:00 交接", "发送 /oncall who 查询值班人"],
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "category": "exact-fact",
+    "question": "user-service、order-service 和 notification-service 各部署多少个副本？",
+    "ground_truth": "user-service 部署 3 个副本，order-service 部署 2 个副本，notification-service 部署 2 个副本。",
+    "atomic_facts": ["user-service 3 个副本", "order-service 2 个副本", "notification-service 2 个副本"],
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "category": "exact-fact",
+    "question": "Nginx 配置中 worker_processes 和 worker_connections 的推荐值是什么？",
+    "ground_truth": "排查手册给出的示例配置是 `worker_processes auto` 和 `worker_connections 4096`。",
+    "atomic_facts": ["worker_processes auto", "worker_connections 4096"],
+    "reference": "Nginx 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "paraphrase",
+    "question": "P0 事件多久必须被确认并开始介入？如果半小时还没恢复要找谁？",
+    "ground_truth": "P0 要求 3 分钟内确认、15 分钟介入；如果 30 分钟仍未恢复，需要通知 CTO。",
+    "atomic_facts": ["3 分钟内确认", "15 分钟介入", "30 分钟未恢复通知 CTO"],
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "category": "paraphrase",
+    "question": "RabbitMQ 的消息可靠性隐患是什么？",
+    "ground_truth": "当前 RabbitMQ 没有配置镜像队列，节点重启时可能导致消息丢失。",
+    "atomic_facts": ["RabbitMQ 无镜像队列", "节点重启可能丢消息"],
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "category": "paraphrase",
+    "question": "一个 Pod 反复启动又退出时，首先应该看哪些信息？",
+    "ground_truth": "对于 CrashLoopBackOff，应先查看 Pod 的 Events 和退出原因，再使用 `kubectl logs <pod-name> --previous` 查看上一次崩溃容器的日志，同时检查退出码、资源限制和健康检查探针。",
+    "atomic_facts": ["查看 Events 和退出原因", "使用 kubectl logs --previous", "检查资源限制和健康探针"],
+    "reference": "Kubernetes 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "paraphrase",
+    "question": "怎样区分 502 是上游进程没启动，还是上游响应太慢？",
+    "ground_truth": "如果错误日志是 `connect() refused`，常见原因是后端服务未启动；如果是 `upstream timed out`，通常表示后端响应超时。",
+    "atomic_facts": ["connect() refused 表示后端未启动", "upstream timed out 表示后端响应超时"],
+    "reference": "Nginx 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "paraphrase",
+    "question": "在监控体系里，为什么不能把 SLA、SLO 和 SLI 当成同一个概念？",
+    "ground_truth": "SLI 是服务质量的实际度量指标，SLO 是基于 SLI 设定的内部目标，SLA 是对外承诺的服务等级协议，未达成 SLA 可能产生商业赔偿。",
+    "atomic_facts": ["SLI 是度量指标", "SLO 是内部目标", "SLA 是对外承诺"],
+    "reference": "可观测性与监控告警最佳实践",
+    "kb_dependent": true
+  },
+  {
+    "category": "cross-document",
+    "question": "如果 api-gateway P99 延迟升高，同时 user-service 出现 CrashLoopBackOff，结合拓扑和复盘应优先验证什么？",
+    "ground_truth": "应优先查看 user-service 的上一次崩溃日志和 Events，确认是否存在 `too many connections`；然后检查 user-db 是否达到 max_connections=400，并沿 order-service → user-service → user-db 的调用链检查近期连接池配置变更。",
+    "atomic_facts": ["查看 CrashLoopBackOff 的 previous 日志", "检查 user-db max_connections=400", "沿 order-service 到 user-db 的调用链排查"],
+    "reference": "服务拓扑 + 历史故障复盘 + Kubernetes 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "cross-document",
+    "question": "为什么 api-gateway 的 P0 告警可以抑制下游告警？这种设计和故障排查中的调用链分析有什么关系？",
+    "ground_truth": "api-gateway 是流量入口，下游 user-service 和 order-service 的告警可能只是同一故障的症状，因此可以用 Alertmanager inhibit_rules 降噪；但排查时仍要沿调用链追踪到 user-db 等底层根因，不能只处理入口告警。",
+    "atomic_facts": ["api-gateway 是流量入口", "使用 Alertmanager inhibit_rules 抑制同因告警", "排查仍需沿调用链追踪根因"],
+    "reference": "团队告警响应规范 + 服务拓扑 + 历史故障复盘",
+    "kb_dependent": true
+  },
+  {
+    "category": "cross-document",
+    "question": "为什么 INC-2026-0522 之后，注册后的关键查询必须走主库？这和监控指标有什么关系？",
+    "ground_truth": "注册是写主库操作，主从同步延迟会导致立即查询从库时读不到刚写入的数据，因此关键查询必须走主库；同时应监控复制延迟，当前延迟超过 30 秒会触发 P2 告警。",
+    "atomic_facts": ["注册写主库", "关键查询强制走主库", "延迟超过 30 秒触发 P2"],
+    "reference": "服务拓扑 + 历史故障复盘",
+    "kb_dependent": true
+  },
+  {
+    "category": "cross-document",
+    "question": "如果一次发布导致 Java 服务响应变慢并出现 Pod 重启，应该同时从应用、Kubernetes 和依赖链哪些方向排查？",
+    "ground_truth": "应查看 Pod Events、上一次容器日志、退出码和资源限制，确认是否 OOMKilled 或健康探针误杀；同时检查发布后的应用配置和下游依赖是否变慢，并结合服务拓扑判断影响是否沿调用链扩散。",
+    "atomic_facts": ["查看 Pod Events 和 previous 日志", "检查退出码、资源限制和探针", "结合服务拓扑检查依赖链影响"],
+    "reference": "Kubernetes 故障排查手册 + 服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "category": "cross-document",
+    "question": "如何把一次 P0 故障从告警响应、日志排查、根因定位到复盘沉淀成闭环？",
+    "ground_truth": "先按 P0 要求 3 分钟内确认、15 分钟介入并优先止损；再根据日志和指标定位影响面与根因，恢复后 60 分钟内提交初步复盘，5 个工作日内将完整复盘文档沉淀到知识库。",
+    "atomic_facts": ["3 分钟内确认并 15 分钟介入", "先止损再追根因", "5 个工作日内沉淀完整复盘"],
+    "reference": "团队告警响应规范 + 可观测性与监控告警最佳实践",
+    "kb_dependent": true
+  },
+  {
+    "category": "structured",
+    "question": "P0、P1、P2 三种告警的确认和介入时间分别是多少？",
+    "ground_truth": "P0 是 3 分钟内确认、15 分钟介入；P1 是 10 分钟内确认、30 分钟介入；P2 是 30 分钟内确认、2 小时介入。",
+    "atomic_facts": ["P0 3 分钟确认 15 分钟介入", "P1 10 分钟确认 30 分钟介入", "P2 30 分钟确认 2 小时介入"],
+    "reference": "团队告警响应规范",
+    "kb_dependent": true
+  },
+  {
+    "category": "structured",
+    "question": "服务拓扑中的三个数据库或中间件实例分别有哪些容量或可靠性配置？",
+    "ground_truth": "user-db 的 max_connections=400，order-db 的 max_connections=300，redis-cache 的 maxclients=10000；RabbitMQ 没有镜像队列，存在节点重启丢消息风险。",
+    "atomic_facts": ["user-db max_connections=400", "order-db max_connections=300", "redis maxclients=10000", "RabbitMQ 无镜像队列"],
+    "reference": "服务拓扑",
+    "kb_dependent": true
+  },
+  {
+    "category": "structured",
+    "question": "Nginx 502 排查中，哪些错误分别对应连接拒绝、上游超时和所有上游不可用？",
+    "ground_truth": "`connect() refused` 对应后端服务未启动，`upstream timed out` 对应后端响应超时，`no live upstreams` 对应所有后端不可用。",
+    "atomic_facts": ["connect() refused 对应后端未启动", "upstream timed out 对应响应超时", "no live upstreams 对应所有后端不可用"],
+    "reference": "Nginx 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "structured",
+    "question": "可观测性文档给出的 SLO 示例有哪些？",
+    "ground_truth": "示例包括 99.9% 的请求在 500ms 内完成、可用性达到 99.95%、错误率低于 0.1%。",
+    "atomic_facts": ["99.9% 请求在 500ms 内完成", "可用性 99.95%", "错误率低于 0.1%"],
+    "reference": "可观测性与监控告警最佳实践",
+    "kb_dependent": true
+  },
+  {
+    "category": "procedure",
+    "question": "发现 Pod 长时间 Pending 时，按照手册应该如何排查？",
+    "ground_truth": "应先用 `kubectl describe pod` 查看 Events，重点检查资源不足、nodeSelector 或 nodeAffinity 不匹配、节点 taint 没有对应 toleration，以及 PVC 无法绑定等原因。",
+    "atomic_facts": ["使用 kubectl describe pod 查看 Events", "检查资源不足", "检查节点选择器、污点容忍和 PVC"],
+    "reference": "Kubernetes 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "procedure",
+    "question": "Redis 热点 key 过期导致数据库过载时，为什么不应该只延长 TTL？正确方案是什么？",
+    "ground_truth": "延长 TTL 只是推迟过期时间，不能消除高并发下再次击穿的可能；正确方案是逻辑过期加互斥锁，由一个线程后台异步刷新，其他请求暂时读取旧值，并在活动前预热缓存。",
+    "atomic_facts": ["延长 TTL 不能消除击穿", "逻辑过期加互斥锁", "后台异步刷新和活动前预热"],
+    "reference": "历史故障复盘",
+    "kb_dependent": true
+  },
+  {
+    "category": "procedure",
+    "question": "发现 Nginx upstream timed out 后，除了看 Nginx 日志，还应该验证哪些方向？",
+    "ground_truth": "应检查后端服务状态、upstream 地址和端口、后端连接数限制，以及 CPU、内存、磁盘和文件描述符；还要根据场景检查后端连接池或 PHP-FPM 是否正常。",
+    "atomic_facts": ["检查后端服务状态和 upstream 配置", "检查连接数和资源", "检查文件描述符或 PHP-FPM"],
+    "reference": "Nginx 故障排查手册",
+    "kb_dependent": true
+  },
+  {
+    "category": "procedure",
+    "question": "如何根据错误预算决定是否应该冻结功能发布？",
+    "ground_truth": "错误预算等于 1 减去 SLO；当错误预算耗尽时，应冻结功能发布，把工程资源投入稳定性改进，直到预算恢复。",
+    "atomic_facts": ["错误预算等于 1 减去 SLO", "错误预算耗尽时冻结发布", "投入稳定性改进"],
+    "reference": "可观测性与监控告警最佳实践",
+    "kb_dependent": true
+  },
+  {
+    "category": "unanswerable",
+    "question": "知识库中是否规定了 Redis 的具体客户端连接池代码规范？",
+    "ground_truth": "当前知识库没有规定 Redis 客户端连接池的具体代码规范，现有文档只描述 Redis 的拓扑、容量配置和缓存故障案例。",
+    "atomic_facts": [],
+    "reference": "无",
+    "kb_dependent": false
+  },
+  {
+    "category": "unanswerable",
+    "question": "团队使用哪一家云厂商的 Kubernetes 托管服务？",
+    "ground_truth": "当前知识库没有说明团队使用的 Kubernetes 云厂商，不能根据现有文档确定。",
+    "atomic_facts": [],
+    "reference": "无",
+    "kb_dependent": false
+  },
+  {
+    "category": "unanswerable",
+    "question": "团队的值班工程师月薪和绩效奖金标准是多少？",
+    "ground_truth": "当前知识库没有涉及值班工程师的薪酬或绩效奖金信息。",
+    "atomic_facts": [],
+    "reference": "无",
+    "kb_dependent": false
+  },
+  {
+    "category": "unanswerable",
+    "question": "api-gateway 的下一次版本发布时间是什么时候？",
+    "ground_truth": "当前知识库没有记录 api-gateway 的下一次版本发布时间，不能根据现有文档确定。",
+    "atomic_facts": [],
+    "reference": "无",
+    "kb_dependent": false
   }
 ]

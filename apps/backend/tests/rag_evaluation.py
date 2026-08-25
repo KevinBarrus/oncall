@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -86,8 +87,8 @@ ALL_STRATEGIES: tuple[StrategyId, ...] = (
     "cag-kvcache",
 )
 
-DEEPSEEK_CHAT_MODEL = "deepseek-chat"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_JUDGE_MODEL = "deepseek-chat"
+DEFAULT_JUDGE_BASE_URL = "https://api.deepseek.com/v1"
 E2E_API_BASE_URL = os.environ.get("RAG_API_BASE_URL", "http://127.0.0.1:8000")
 TOP_K = 5
 MAX_CONTEXT_CHARS_PER_QUESTION = 6000
@@ -96,6 +97,9 @@ SOURCE_LABELS = {
     "team-alert-response-spec.md": "团队告警响应规范",
     "service-topology.md": "服务拓扑",
     "incident-postmortems.md": "历史故障复盘",
+    "nginx-troubleshooting.md": "Nginx 故障排查手册",
+    "k8s-pod-troubleshooting.md": "Kubernetes 故障排查手册",
+    "observability-metrics.md": "可观测性与监控告警最佳实践",
 }
 GOLD_DOCUMENTS = {label: _DATA_DIR / filename for filename, label in SOURCE_LABELS.items()}
 
@@ -134,6 +138,18 @@ def _load_qa_pairs(limit: int | None = None) -> list[dict[str, Any]]:
         facts = item.get("atomic_facts")
         if not isinstance(facts, list) or not all(isinstance(fact, str) for fact in facts):
             raise ValueError(f"Item {idx}: 'atomic_facts' must be a string list.")
+        category = item.get("category")
+        if category not in {
+            "exact-fact",
+            "paraphrase",
+            "cross-document",
+            "structured",
+            "procedure",
+            "unanswerable",
+        }:
+            raise ValueError(f"Item {idx}: invalid or missing category: {category!r}")
+        if category == "unanswerable" and item.get("kb_dependent") is not False:
+            raise ValueError(f"Item {idx}: unanswerable cases must set kb_dependent=false.")
     return items[:limit] if limit else items
 
 
@@ -145,6 +161,26 @@ def _dataset_distribution(qa_pairs: Sequence[dict[str, Any]]) -> dict[str, int]:
         stratum = "unanswerable" if not item.get("kb_dependent", True) else "answerable"
         distribution[f"{stratum}:{reference}"] += 1
     return dict(sorted(distribution.items()))
+
+
+def _category_distribution(qa_pairs: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Report the manually assigned strata used for the evaluation matrix."""
+    distribution: dict[str, int] = defaultdict(int)
+    for item in qa_pairs:
+        category = item.get("category")
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("Every QA item must have a non-empty category.")
+        distribution[category] += 1
+    return dict(sorted(distribution.items()))
+
+
+def _fixture_sha256(paths: Sequence[Path]) -> dict[str, str]:
+    """Fingerprint the exact fixtures used by a result file."""
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in paths
+        if path.exists()
+    }
 
 
 def _expected_sources(qa: Mapping[str, Any]) -> frozenset[str]:
@@ -361,7 +397,9 @@ async def _generate_answer(
         f"## 检索文档\n{ctx_block}\n\n"
         "请用中文给出简洁准确的回答，必要时分段标注来源。"
     )
-    response = await model.ainvoke(prompt)
+    response = await asyncio.wait_for(
+        model.ainvoke(prompt), timeout=GENERATION_TIMEOUT_SECONDS
+    )
     elapsed = (time.monotonic() - t0) * 1000
     return _extract_text(response), elapsed
 
@@ -556,7 +594,11 @@ class JudgeScore:
     std: float | None = None
 
 
-JUDGE_SAMPLES = 3
+JUDGE_SAMPLES = max(1, int(os.environ.get("RAG_JUDGE_SAMPLES", "3")))
+JUDGE_TIMEOUT_SECONDS = float(os.environ.get("RAG_JUDGE_TIMEOUT_SECONDS", "60"))
+GENERATION_TIMEOUT_SECONDS = float(
+    os.environ.get("RAG_GENERATION_TIMEOUT_SECONDS", "120")
+)
 
 
 def _parse_score(text: str) -> float | None:
@@ -623,7 +665,9 @@ async def _llm_score(
     last_error: str | None = None
     for _ in range(max(samples, 1)):
         try:
-            resp = await judge_model.ainvoke(prompt)
+            resp = await asyncio.wait_for(
+                judge_model.ainvoke(prompt), timeout=JUDGE_TIMEOUT_SECONDS
+            )
             score = _parse_score(_extract_text(resp))
         except Exception as exc:
             failures += 1
@@ -676,19 +720,20 @@ async def _score_one_question(
             errors[key] = result.error
         return result.score
 
-    # Context Precision — per-chunk relevance average (all chunks)
-    cp_vals: list[float] = []
-    for index, ctx in enumerate(contexts):
-        score = record(
-            f"context_precision[{index}]",
-            await _llm_score(
-                judge_model,
-                f"这个文档片段与问题直接相关吗？\n"
-                f"问题：{question}\n片段：{ctx[:500]}\n"
-                f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
-                f"\"explanation\": \"一句简短理由\"}}。1.0=高度相关，0.0=不相关。",
-            ),
+    # Context Precision — score chunks concurrently, then aggregate in rank order.
+    cp_results = await asyncio.gather(*(
+        _llm_score(
+            judge_model,
+            f"这个文档片段与问题直接相关吗？\n"
+            f"问题：{question}\n片段：{ctx[:500]}\n"
+            f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+            f"\"explanation\": \"一句简短理由\"}}。1.0=高度相关，0.0=不相关。",
         )
+        for ctx in contexts
+    ))
+    cp_vals: list[float] = []
+    for index, result in enumerate(cp_results):
+        score = record(f"context_precision[{index}]", result)
         if score is not None:
             cp_vals.append(score)
     scores["context_precision"] = round(sum(cp_vals) / len(cp_vals), 4) if cp_vals else None
@@ -702,39 +747,38 @@ async def _score_one_question(
             "failures": 0,
         }
 
-    # Faithfulness — penalize false attribution to documents
+    # The remaining independent dimensions are also evaluated concurrently.
     doc_text = chr(10).join(contexts)[:2000]
-    scores["faithfulness"] = record("faithfulness", await _llm_score(
-        judge_model,
-        f"评估回答的忠实度。回答可能包含两种信息：📄标记的（声称来自文档）和💡标记的（来自常识）。\n"
-        f"评分标准：\n"
-        f"- 1.0: 📄部分的所有事实都在文档中找到原文依据，没有将常识包装成文档内容\n"
-        f"- 0.5: 📄部分混入了一些文档中没有的事实\n"
-        f"- 0.0: 📄部分大量编造、或文档根本没有的内容却被声称来自文档\n\n"
-        f"文档内容：\n{doc_text}\n\n"
-        f"回答：{answer[:1500]}\n\n"
-        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
-        f"\"explanation\": \"一句简短理由\"}}。",
-    ))
-
-    # Answer Relevancy
-    scores["answer_relevancy"] = record("answer_relevancy", await _llm_score(
-        judge_model,
-        f"评估这个回答是否直接回答了用户问题。\n"
-        f"问题：{question}\n回答：{answer[:1000]}\n"
-        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
-        f"\"explanation\": \"一句简短理由\"}}。1.0=直接完整回答，0.0=完全偏离。",
-    ))
-
-    # Context Recall
-    scores["context_recall"] = record("context_recall", await _llm_score(
-        judge_model,
-        f"评估文档片段覆盖了标准答案中多少个关键要点。\n"
-        f"标准答案：{ground_truth[:1500]}\n"
-        f"文档片段：{chr(10).join(contexts)[:2000]}\n"
-        f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
-        f"\"explanation\": \"一句简短理由\"}}。1.0=覆盖全部要点，0.0=未覆盖任何要点。",
-    ))
+    faithfulness, answer_relevancy, context_recall = await asyncio.gather(
+        _llm_score(
+            judge_model,
+            f"评估回答的忠实度。回答可能包含两种信息：📄标记的（声称来自文档）和💡标记的（来自常识）。\n"
+            f"评分标准：\n"
+            f"- 1.0: 📄部分的所有事实都在文档中找到原文依据，没有将常识包装成文档内容\n"
+            f"- 0.5: 📄部分混入了一些文档中没有的事实\n"
+            f"- 0.0: 📄部分大量编造、或文档根本没有的内容却被声称来自文档\n\n"
+            f"文档内容：\n{doc_text}\n\n回答：{answer[:1500]}\n\n"
+            f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+            f"\"explanation\": \"一句简短理由\"}}。",
+        ),
+        _llm_score(
+            judge_model,
+            f"评估这个回答是否直接回答了用户问题。\n"
+            f"问题：{question}\n回答：{answer[:1000]}\n"
+            f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+            f"\"explanation\": \"一句简短理由\"}}。1.0=直接完整回答，0.0=完全偏离。",
+        ),
+        _llm_score(
+            judge_model,
+            f"评估文档片段覆盖了标准答案中多少个关键要点。\n"
+            f"标准答案：{ground_truth[:1500]}\n文档片段：{chr(10).join(contexts)[:2000]}\n"
+            f"请用 JSON 格式输出：{{\"score\": 0.0 到 1.0 的数字, "
+            f"\"explanation\": \"一句简短理由\"}}。1.0=覆盖全部要点，0.0=未覆盖任何要点。",
+        ),
+    )
+    scores["faithfulness"] = record("faithfulness", faithfulness)
+    scores["answer_relevancy"] = record("answer_relevancy", answer_relevancy)
+    scores["context_recall"] = record("context_recall", context_recall)
 
     return scores, errors, stats
 
@@ -998,13 +1042,20 @@ async def run_evaluation(
     strategies: Sequence[StrategyId] = ALL_STRATEGIES,
     e2e: bool = False,
     mock: bool = False,
+    retrieval_only: bool = False,
 ) -> dict[str, object]:
     print("[0/6] Loading API keys & data ...")
     if mock:
         print("      [mock] skipping API keys, LLM providers, Milvus, and CAG")
     else:
         siliconflow_key = _require_env("SILICONFLOW_API_KEY")
-        deepseek_key = _require_env("DEEPSEEK_API_KEY")
+        judge_key = ""
+        if not retrieval_only:
+            judge_key = os.environ.get("RAG_JUDGE_API_KEY", "").strip() or _require_env(
+                "DEEPSEEK_API_KEY"
+            )
+        judge_model = os.environ.get("RAG_JUDGE_MODEL", DEFAULT_JUDGE_MODEL).strip()
+        judge_base_url = os.environ.get("RAG_JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL).strip()
     qa_pairs = _load_qa_pairs(limit)
     print(f"      {len(qa_pairs)} questions loaded.")
 
@@ -1017,24 +1068,28 @@ async def run_evaluation(
         deepseek_judge = None
     else:
         llm_provider = build_default_llm_provider()
-        chat_model = llm_provider.create_chat_model()  # default LLM for answer generation
+        chat_model = None if retrieval_only else llm_provider.create_chat_model()
         rerank_model = SiliconFlowRerankModel(api_key=siliconflow_key)
 
         # DeepSeek judge
         from langchain_openai import ChatOpenAI
 
-        deepseek_judge = cast(
-            Any,
-            ChatOpenAI(
-                api_key=deepseek_key,
-                base_url=DEEPSEEK_BASE_URL,
-                model=DEEPSEEK_CHAT_MODEL,
-                temperature=0.0,
-                timeout=60,
-                max_retries=1,
-            ),
-        )
-        print(f"      LLM judge: {DEEPSEEK_CHAT_MODEL} @ {DEEPSEEK_BASE_URL}")
+        deepseek_judge = None
+        if not retrieval_only:
+            deepseek_judge = cast(
+                Any,
+                ChatOpenAI(
+                    api_key=judge_key,
+                    base_url=judge_base_url,
+                    model=judge_model,
+                    temperature=0.0,
+                    timeout=60,
+                    max_retries=1,
+                ),
+            )
+            print(f"      LLM judge: {judge_model} @ {judge_base_url}")
+        else:
+            print("      Retrieval-only: skipping generation and LLM Judge")
         print(f"      Rerank: BAAI/bge-reranker-v2-m3 @ SiliconFlow")
 
     # Vector store
@@ -1061,7 +1116,18 @@ async def run_evaluation(
         print(f"      KB: {kb_id or 'N/A'}")
 
         # Embedding model & chunks corpus
-        embedding_model = llm_provider.create_embedding_model()
+        embedding_model = None
+        if any(
+            strategy in strategies
+            for strategy in ("vector-only", "hybrid", "hybrid+rerank")
+        ):
+            embedding_model = llm_provider.create_embedding_model()
+            try:
+                await embedding_model.aembed_documents(["RAG evaluation preflight"])
+            except Exception as exc:
+                raise RuntimeError(
+                    "Embedding provider preflight failed; refusing to record invalid evaluation metrics"
+                ) from exc
         chunks_corpus = (
             await _load_chunks_corpus(vector_store, owner_id, kb_ids)
             if kb_ids
@@ -1073,7 +1139,7 @@ async def run_evaluation(
     cag_state: dict[str, Any] | None = None
     if mock:
         cag_state = None
-    elif "cag-kvcache" in strategies:
+    elif "cag-kvcache" in strategies and not retrieval_only:
         from cag_runner import (
             answer_question as _cag_answer,
             ensure_model,
@@ -1122,8 +1188,25 @@ async def run_evaluation(
             print(f"  [{idx+1}/{len(qa_pairs)}] {question[:70]}...")
 
             cache_load_ms = 0.0
+            generation_error: str | None = None
             try:
-                if mock:
+                if retrieval_only:
+                    if strategy_id == "cag-kvcache":
+                        contexts = [
+                            EvalRetrievedChunk(
+                                content="\n\n---\n\n".join(
+                                    path.read_text(encoding="utf-8")
+                                    for path in GOLD_DOCUMENTS.values()
+                                ),
+                                source="cag-full-context",
+                                chunk_id="cag-full-context",
+                            )
+                        ]
+                        retrieval_ms = 0.0
+                    else:
+                        contexts, retrieval_ms = await retriever(question)
+                    answer, generation_ms = "", 0.0
+                elif mock:
                     contexts, retrieval_ms = await _mock_retrieve(qa)
                     answer, generation_ms = ground_truth, 1.0
                 elif strategy_id == "cag-kvcache" and cag_state:
@@ -1149,15 +1232,35 @@ async def run_evaluation(
                     )
             except Exception as exc:
                 print(f"      [WARN] Failed: {exc}")
+                generation_error = f"{type(exc).__name__}: {exc}"
                 contexts, retrieval_ms, answer, generation_ms = [], 0.0, "", 0.0
 
-            # Deterministic metrics
-            mrr_val = _mrr(contexts, qa)
-            ndcg_val = _ndcg_at_k(contexts, qa, k=TOP_K)
-            recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
+            # CAG supplies one full-context input rather than ranked chunks. MRR/NDCG
+            # are therefore not applicable; only full-context atomic-fact coverage is
+            # comparable to retrieval recall.
+            if strategy_id == "cag-kvcache":
+                mrr_val = None
+                ndcg_val = None
+                recall_val = _atomic_fact_recall_at_k(contexts, qa, k=1)
+            else:
+                mrr_val = _mrr(contexts, qa)
+                ndcg_val = _ndcg_at_k(contexts, qa, k=TOP_K)
+                recall_val = _atomic_fact_recall_at_k(contexts, qa, k=TOP_K)
 
             # LLM scores
-            if mock:
+            if retrieval_only:
+                llm_scores = {
+                    key: None
+                    for key in (
+                        "context_precision",
+                        "context_precision_at_3",
+                        "faithfulness",
+                        "answer_relevancy",
+                        "context_recall",
+                    )
+                }
+                judge_errors, judge_stats = {}, {}
+            elif mock:
                 llm_scores, judge_errors, judge_stats = await _mock_judge(
                     question,
                     answer,
@@ -1174,19 +1277,29 @@ async def run_evaluation(
                 )
 
             # Error classification
-            error_cat: ErrorCategory | str = "judge-unavailable" if judge_errors else _classify_error(
+            error_cat: ErrorCategory | str = (
+                "retrieval-only"
+                if retrieval_only
+                else "generation"
+                if generation_error
+                else "judge-unavailable"
+                if judge_errors
+                else _classify_error(
                 [chunk.content for chunk in contexts],
                 ground_truth,
                 cast(float, llm_scores["context_precision"]),
                 cast(float, llm_scores["context_recall"]),
                 cast(float, llm_scores["faithfulness"]),
                 cast(float, llm_scores["answer_relevancy"]),
+                )
             )
 
             item: dict[str, object] = {
                 "question": question,
+                "category": qa.get("category"),
                 "groundTruth": ground_truth[:500],
                 "answer": answer[:1000],
+                **({"error": generation_error} if generation_error else {}),
                 "contexts": [
                     {"chunkId": chunk.chunk_id, "source": chunk.source, "content": chunk.content[:300]}
                     for chunk in contexts
@@ -1194,8 +1307,8 @@ async def run_evaluation(
                 "contextCount": len(contexts),
                 "scores": {
                     **llm_scores,
-                    "mrr": round(mrr_val, 4),
-                    "ndcg_at_5": round(ndcg_val, 4),
+                    "mrr": round(mrr_val, 4) if mrr_val is not None else None,
+                    "ndcg_at_5": round(ndcg_val, 4) if ndcg_val is not None else None,
                     "atomic_fact_recall_at_5": round(recall_val, 4),
                 },
                 "judgeErrors": judge_errors,
@@ -1219,11 +1332,12 @@ async def run_evaluation(
             print(
                 f"      CP={_score_display(cp)} CP@3={_score_display(cp3)} "
                 f"CR={_score_display(cr)} AR={_score_display(ar)} F={_score_display(fai)} "
-                f"MRR={mrr_val:.2f} NDCG={ndcg_val:.2f} FactR@5={recall_val:.2f} "
+                f"MRR={_score_display(mrr_val)} NDCG={_score_display(ndcg_val)} "
+                f"FactR@5={recall_val:.2f} "
                 f"| ret={retrieval_ms:.0f}ms{gen_display} | [{error_cat}]"
             )
 
-            if not mock:
+            if not mock and not retrieval_only:
                 await asyncio.sleep(0.3)  # rate limit
 
         # Aggregate metrics
@@ -1303,7 +1417,7 @@ async def run_evaluation(
     print(f"{'='*60}")
     gold_document_baseline: dict[str, object] = {}
     answer_injection: dict[str, object] = {}
-    if not mock:
+    if not mock and not retrieval_only:
         gold_document_baseline = await _evaluate_generation_baseline(
             chat_model,
             deepseek_judge,
@@ -1325,7 +1439,7 @@ async def run_evaluation(
         )
 
     end_to_end: dict[str, object] | None = None
-    if e2e:
+    if e2e and not retrieval_only:
         print(f"\n{'='*60}")
         print("  End-to-end chat evaluation (HTTP → SSE → Agent)")
         print(f"{'='*60}")
@@ -1346,16 +1460,25 @@ async def run_evaluation(
             "topK": TOP_K,
             "strategies": list(strategies),
             "qaCount": len(qa_pairs),
-            "judgeModel": DEEPSEEK_CHAT_MODEL,
+            "judgeModel": judge_model if not mock else None,
             "judge": {
-                "model": DEEPSEEK_CHAT_MODEL,
-                "baseUrl": DEEPSEEK_BASE_URL,
-                "note": "跨模型裁判：DeepSeek 评估 Qwen 生成内容，存在系统性偏差，分数仅供参考。",
+                "model": judge_model if not mock else None,
+                "baseUrl": judge_base_url if not mock else None,
+                "samplesPerMetric": JUDGE_SAMPLES if not mock else 0,
+                "note": (
+                    "Judge 配置由 RAG_JUDGE_* 显式指定；若与生成模型相同，存在同模型自评偏差。"
+                    if not mock
+                    else "mock run 不包含真实 Judge。"
+                ),
             },
             "rerankModel": "BAAI/bge-reranker-v2-m3",
             "mock": mock,
+            "retrievalOnly": retrieval_only,
             "e2e": e2e,
             "datasetDistribution": _dataset_distribution(qa_pairs),
+            "categoryDistribution": _category_distribution(qa_pairs),
+            "fixtureSha256": _fixture_sha256([_QA_FILE, *GOLD_DOCUMENTS.values()]),
+            "cagCorpus": [path.name for path in GOLD_DOCUMENTS.values()],
         },
         "strategies": {
             sid: {
@@ -1642,6 +1765,11 @@ def main() -> None:
     parser.add_argument(
         "--mock", action="store_true", help="Run offline with deterministic fixtures"
     )
+    parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Run real retrieval and deterministic metrics without generation or LLM Judge",
+    )
     args = parser.parse_args()
 
     if args.report:
@@ -1655,7 +1783,13 @@ def main() -> None:
 
     strategies = (cast(StrategyId, args.strategy),) if args.strategy else ALL_STRATEGIES
     payload = asyncio.run(
-        run_evaluation(args.limit, strategies=strategies, e2e=args.e2e, mock=args.mock)
+        run_evaluation(
+            args.limit,
+            strategies=strategies,
+            e2e=args.e2e,
+            mock=args.mock,
+            retrieval_only=args.retrieval_only,
+        )
     )
     _print_comparison_report(payload)
 
@@ -1668,7 +1802,7 @@ def main() -> None:
 class TestRagEvaluation:
     def test_qa_dataset_loads(self) -> None:
         pairs = _load_qa_pairs()
-        assert len(pairs) >= 20, f"Expected >=20 QA pairs, got {len(pairs)}"
+        assert len(pairs) >= 50, f"Expected >=50 QA pairs, got {len(pairs)}"
         for idx, qa in enumerate(pairs):
             assert qa["question"].strip(), f"Item {idx}: empty question"
             assert qa["ground_truth"].strip(), f"Item {idx}: empty ground_truth"
@@ -1687,6 +1821,17 @@ class TestRagEvaluation:
         assert "哪些上层服务会首先出现故障" in questions
         assert any(" + " in str(qa.get("reference", "")) for qa in pairs)
         assert any(str(qa.get("reference", "")) == "无" for qa in pairs)
+
+    def test_dataset_has_all_required_strata(self) -> None:
+        distribution = _category_distribution(_load_qa_pairs())
+        assert distribution == {
+            "cross-document": 13,
+            "exact-fact": 12,
+            "paraphrase": 7,
+            "procedure": 8,
+            "structured": 6,
+            "unanswerable": 8,
+        }
 
     def test_fact_matches_chunk_tolerates_paraphrase(self) -> None:
         fact = "api-gateway 的 P99 延迟高于 800 毫秒"
